@@ -2,6 +2,8 @@ from functools import partial
 
 from fastapi import Depends
 
+import machine.controllers as ctrl
+from machine.controllers.ai.recommender import AIRecommenderController
 import machine.models as modl
 from core.utils import singleton
 import machine.controllers as ctrl
@@ -127,4 +129,19 @@ class InternalProvider:
     def get_learningpaths_controller(self, db_session=Depends(db_session_keeper.get_session)):
         return ctrl.LearningPathsController(
             learning_paths_repository=self.learning_paths_repository(db_session=db_session)
+        )
+
+    def get_ai_recommender_controller(self, db_session=Depends(db_session_keeper.get_session)):
+        """
+        Provides an instance of AIRecommenderController.
+
+        Args:
+            db_session (AsyncSession): Database session dependency.
+
+        Returns:
+            AIRecommenderController: Controller for managing AI-based recommendations.
+        """
+        return AIRecommenderController(
+            recommend_lesson_repository=self.recommend_lessons_repository(db_session=db_session),
+            learning_paths_repository=self.learning_paths_repository(db_session=db_session),
         )

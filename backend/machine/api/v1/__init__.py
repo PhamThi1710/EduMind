@@ -8,6 +8,8 @@ from machine.api.v1.courses import router as courses_router
 from machine.api.v1.recommend import router as recommend_router
 from machine.api.v1.module import router as module_quiz_router
 from machine.api.v1.lesson import router as lesson_router
+from .ai.router import router as ai_router
+
 router = APIRouter(prefix="/v1")
 router.include_router(auth_router)
 # router.include_router(user_router)
@@ -17,4 +19,6 @@ router.include_router(courses_router)
 router.include_router(lesson_router)
 router.include_router(recommend_router)
 router.include_router(module_quiz_router)
+router.include_router(ai_router)
+
 __all__ = ["router"]
