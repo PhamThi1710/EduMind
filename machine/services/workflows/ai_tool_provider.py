@@ -14,7 +14,7 @@ class EmbeddingsModelName(StrEnum):
     GOOGLE_TEXT_EMBEDDING = "models/text-embedding-004"
 
 class LLMModelName(StrEnum):
-    GEMINI_PRO = "gemini-1.5-pro"
+    GEMINI_PRO = "gemini/gemini-2.0-flash"
     GPT_4O_MINI = "gpt-4o-mini"
 
 class AIToolProvider:
@@ -35,7 +35,7 @@ class AIToolProvider:
 
         if modelname == LLMModelName.GEMINI_PRO:
             llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-pro",
+                model="gemini/gemini-2.0-flash",
                 temperature=0,
                 max_tokens=None,
                 timeout=None,
