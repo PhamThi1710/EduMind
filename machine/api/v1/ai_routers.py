@@ -1506,7 +1506,7 @@ async def generate_student_goals(
     # Initialize the ChunkingManager (for consistency, though we may not need chunking here)
     chunking_manager = ChunkingManager(
         provider="gemini",
-        gemini_model_name="gemini-1.5-pro",
+        gemini_model_name="gemini-2.0-flash-lite",
         temperature=0.7,
         max_output_tokens=4000
     )
