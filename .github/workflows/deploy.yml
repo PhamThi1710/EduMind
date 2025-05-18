@@ -1,0 +1,43 @@
+name: Manual Deploy to EC2 (Docker)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Push app code to EC2
+        run: |
+          # Ensure the target directory exists
+          ssh -i ~/.ssh/id_rsa ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} 'mkdir -p ~/codemate-backend'
+      
+          # Push only clean app files, exclude dotfiles and sensitive config
+          rsync -avz --delete \
+            --exclude='.env' \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.vscode/' \
+            --exclude='.bashrc' \
+            --exclude='.ssh/' \
+            --exclude='.profile' \
+            --exclude='.bash_history' \
+            -e "ssh -i ~/.ssh/id_rsa" \
+            ./ \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/codemate-backend/
+
+      - name: Run deploy script on EC2
+        run: |
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} 'cd ~/codemate-backend && bash deploy.sh'
+
