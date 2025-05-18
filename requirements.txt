@@ -50,3 +50,4 @@ wheel==0.42.0
 zope.interface==6.1
 alembic==1.13.1
 pydantic-settings==2.2.1
+asyncpg==0.29.0
