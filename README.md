@@ -138,7 +138,7 @@ docker compose up --build -d
 
 **Apply Database Migrations:**
 
-Once the database container is running, apply migrations in a separate terminal: **!! Crucial !!**
+Once the database container is running, apply migrations in a separate terminal: **!! Crucial !!: You must run this cml right after running docker to create database and relations** 
 
 ```bash
 docker compose exec web poetry run alembic upgrade head
