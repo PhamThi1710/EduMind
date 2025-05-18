@@ -1,0 +1,98 @@
+
+services:
+  web:
+    build:
+      context: . # Build the image from the Dockerfile in the current directory
+      dockerfile: Dockerfile
+    container_name: edumind_web
+    # The command to start the Uvicorn server for FastAPI
+    # It targets the 'machine' FastAPI instance in 'machine/server.py'
+    # --host 0.0.0.0 makes it accessible from outside the container
+    # --reload is useful for development; remove for production or control via DEBUG env var
+    command: >
+      sh -c "if [ \"$${DEBUG:-false}\" = \"True\" ]; then
+               uvicorn machine.server:machine --host 0.0.0.0 --port 8080 --reload;
+             else
+               uvicorn machine.server:machine --host 0.0.0.0 --port 8080;
+             fi"
+    volumes:
+      - .:/app # Mount your local code into the container for live updates (development)
+      # You might need to mount other specific paths if your app writes files
+      # e.g., - ./data:/app/data
+    ports:
+      # Map APP_PORT from .env (default 8080) on host to 8080 in container
+      - "${APP_PORT:-8080}:8080"
+    env_file:
+      - .env # Load environment variables from .env file
+    environment:
+      # Override database and redis URLs for Docker networking
+      # The service name 'db' resolves to the PostgreSQL container's IP
+      # The service name 'redis' resolves to the Redis container's IP
+      SQLALCHEMY_POSTGRES_URI: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-2112796}@db:5432/${POSTGRES_DB:-codemate}
+      REDIS_URL: redis://redis:6379/0
+      # PYTHONUNBUFFERED and PYTHONDONTWRITEBYTECODE are good to have here too,
+      # though also set in Dockerfile. Redundancy doesn't hurt.
+      PYTHONUNBUFFERED: 1
+      PYTHONDONTWRITEBYTECODE: 1
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: edumind_worker
+    # Command to start Dramatiq workers.
+    # Your main.py uses: subprocess.run(["dramatiq", "worker", "--processes", "3"])
+    # This implies Dramatiq will auto-discover actors.
+    # Ensure your 'tasks' module (or wherever actors are defined) is imported
+    # during app startup (e.g., in machine/server.py or its imports)
+    # so Dramatiq can find them.
+    # If 'worker.py' is the entry point for dramatiq (e.g., defines and starts broker), use:
+    # command: python worker.py
+    command: dramatiq worker --processes 3
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      SQLALCHEMY_POSTGRES_URI: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-2112796}@db:5432/${POSTGRES_DB:-codemate}
+      REDIS_URL: redis://redis:6379/0
+      PYTHONUNBUFFERED: 1
+      PYTHONDONTWRITEBYTECODE: 1
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine # Using PostgreSQL 15
+    container_name: edumind_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # Persist database data
+    environment:
+      # These should match what your application expects,
+      # or what you configured in SQLALCHEMY_POSTGRES_URI
+      POSTGRES_USER: ${POSTGRES_USER:-postgres} # Get from .env or default
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-2112796} # Get from .env or default
+      POSTGRES_DB: ${POSTGRES_DB:-codemate} # Get from .env or default
+    ports:
+      # Map port 5433 on host (from your .env) to 5432 in container (PostgreSQL default)
+      - "5433:5432"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine # Using Redis 7
+    container_name: edumind_redis
+    volumes:
+      - redis_data:/data # Persist Redis data
+    ports:
+      # Map port 6379 on host to 6379 in container (Redis default)
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes: # Define named volumes for data persistence
+  postgres_data:
+  redis_data:

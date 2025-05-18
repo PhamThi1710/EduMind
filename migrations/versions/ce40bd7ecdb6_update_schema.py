@@ -30,10 +30,10 @@ def upgrade() -> None:
                existing_type=postgresql.ENUM('system', 'course', name='feedbacktype'),
                type_=sa.String(length=255),
                nullable=True)
-    op.alter_column('lessons', 'order',
-               existing_type=sa.INTEGER(),
-               server_default=sa.Identity(always=False, start=1, increment=1),
-               existing_nullable=False)
+    op.drop_column('lessons', 'order')
+
+    # 2. Add the 'order' column again, this time correctly as an Identity column
+    op.add_column('lessons', sa.Column('order', sa.Integer(), sa.Identity(start=1, increment=1, always=False), nullable=False))
     op.add_column('modules', sa.Column('progress', sa.Integer(), nullable=True))
     op.alter_column('programming_test_results', 'judge0_token',
                existing_type=sa.TEXT(),
@@ -59,10 +59,8 @@ def downgrade() -> None:
                type_=sa.TEXT(),
                existing_nullable=False)
     op.drop_column('modules', 'progress')
-    op.alter_column('lessons', 'order',
-               existing_type=sa.INTEGER(),
-               server_default=sa.Identity(always=True, start=1, increment=1, minvalue=1, maxvalue=2147483647, cycle=False, cache=1),
-               existing_nullable=False)
+    op.drop_column('lessons', 'order')
+    op.add_column('lessons', sa.Column('order', sa.Integer(), nullable=False)) # Or its previous 
     op.alter_column('feedback', 'feedback_type',
                existing_type=sa.String(length=255),
                type_=postgresql.ENUM('system', 'course', name='feedbacktype'),
