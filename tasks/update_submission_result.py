@@ -55,7 +55,6 @@ async def poll_judge0_submission_result(submission_id_str: str):
                 tr.time = float(time) if time else None
                 tr.memory = float(memory) if memory else None
                 tr.stderr = res["stderr"]
-         
 
                 if res["status"] in ["In Queue", "Processing"]:
                     still_processing = True
@@ -106,5 +105,5 @@ async def poll_judge0_submission_result(submission_id_str: str):
         syslog.info(f"Updated submission {submission_id} status to {submission.status}")
 
         # Trigger issues summary update
-        update_issues_summary_task.send(str(submission_id))
+#        update_issues_summary_task.send(str(submission_id))
         syslog.info(f"Triggered issues summary update for submission {submission_id}")
