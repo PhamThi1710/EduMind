@@ -47,6 +47,8 @@ This repository contains the backend API for the EduMind application. It handles
   * [Download Docker](https://docs.docker.com/get-docker/)
 * **Poetry (Optional):** Only if you intend to manage dependencies or run the project locally without Docker
   * [Install Poetry](https://python-poetry.org/docs/#installation)
+* **Python:** Install the latest version of Python
+  * [Install Python]([https://python-poetry.org/docs/#installation](https://www.python.org/downloads/))
 
 ## Getting Started
 
