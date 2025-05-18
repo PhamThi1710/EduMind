@@ -92,8 +92,8 @@ class Judge0Settings(BaseSettings):
     # JUDGE0_URL is not in your .env, RAPIDAPI_KEY is
     RAPIDAPI_KEY: Optional[str] = None
     # Defaults if you want them, but better to load from .env if they are there
-    # JUDGE0_URL: str = "https://judge0-ce.p.rapidapi.com"
-    # RAPIDAPI_HOST: str = "judge0-ce.p.rapidapi.com"
+    JUDGE0_URL: str = "https://judge0-ce.p.rapidapi.com"
+    RAPIDAPI_HOST: str = "judge0-ce.p.rapidapi.com"
     model_config = SettingsConfigDict(extra="ignore")
 
 # The final Settings class will inherit model_config from CoreSettings (and others if they also define it,
