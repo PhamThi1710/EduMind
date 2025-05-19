@@ -1621,7 +1621,7 @@ async def generate_quiz(
     Generate a quiz based on a recommended lesson.
     
     Args:
-        request: Contains recommend_lesson_id
+        request: Contains recommend_lesson_id and difficulty_distribution
         Other parameters: Controllers for different database models
         
     Returns:
@@ -1638,7 +1638,7 @@ async def generate_quiz(
         raise NotFoundException(message="Your account is not allowed to access this feature.")
     
     if not request.module_id:
-        raise BadRequestException(message="Please provide recommend_lesson_id.")
+        raise BadRequestException(message="Please provide module_id.")
     
     # Fetch module details
     module = await modules_controller.modules_repository.first(where_=[Modules.id == request.module_id])
@@ -1677,12 +1677,9 @@ async def generate_quiz(
     }
     
     for document in documents:
-        # Get extracted text for each document
         extracted = await extracted_text_controller.extracted_text_repository.first(
             where_=[ExtractedText.document_id == document.id]
         )
-        
-        # Only include documents with extracted text
         if extracted and extracted.extracted_content:
             lesson_data["documents"].append({
                 "id": str(document.id),
@@ -1692,43 +1689,33 @@ async def generate_quiz(
                 "extracted_content": extracted.extracted_content
             })
     
-    # Get recommended content for extra context
     recommended_content = recommend_lesson.recommended_content
-    explanation = recommend_lesson.explain
     module_data = {
         "id": str(module.id),
         "title": module.title,
         "objectives": module.objectives if module.objectives else [],
     }
     
-    # Get API key from environment variables
+    # Initialize LLM
     gemini_api_key = os.getenv("GOOGLE_GENAI_API_KEY")
-    
-    # Use AIToolProvider to create the LLM model
     ai_tool_provider = AIToolProvider()
     llm = ai_tool_provider.chat_model_factory(LLMModelName.GEMINI_PRO)
-    
-    # Set fixed parameters with increased token limit
     llm.temperature = 0.3
-    llm.max_output_tokens = 8192 
+    llm.max_output_tokens = 8192
     
-    # Create quiz record first with basic info
+    # Create quiz record
     quiz_attributes = {
         "name": f"Quiz for {lesson.title}",
         "description": f"Assessment based on {module.title}",
         "status": "new",
-        "time_limit": 30,  # Default, will update later
-        "max_score": 100,  # Default, will update later
+        "time_limit": 30,
+        "max_score": 100,
         "module_id": module.id,
     }
     
     created_quiz = await recommend_quizzes_controller.recommend_quizzes_repository.create(attributes=quiz_attributes, commit=True)
-    
     if not created_quiz:
         raise ApplicationException(message="Failed to create quiz")
-    
-    # Initialize questions list
-    all_questions = []
     
     # Define difficulties with their counts
     difficulties = [
@@ -1737,15 +1724,13 @@ async def generate_quiz(
         {"name": "hard", "count": request.difficulty_distribution.hard}
     ]
     
-    # Create a function to generate questions for a specific difficulty
-    async def generate_questions_for_difficulty(difficulty_data):
+    async def generate_questions_for_difficulty(difficulty_data: Dict, max_retries: int = 3) -> List[Dict]:
         difficulty_name = difficulty_data["name"]
         questions_needed = difficulty_data["count"]
         
         if questions_needed <= 0:
             return []
             
-        # Build prompt for this difficulty level
         prompt = f"""
         ## Quiz Generation Task for {difficulty_name.upper()} Questions Only
         
@@ -1798,72 +1783,77 @@ async def generate_quiz(
         9. Each question should be worth {10 if difficulty_name == "hard" else (7 if difficulty_name == "medium" else 5)} points
         """
         
-        try:
-            question_request = QuestionRequest(
-                content=prompt,
-                temperature=0.3,
-                max_tokens=8192
-            )
-            
-            response = llm.invoke(question_request.content)
-            
-            if not response:
-                print(f"Failed to generate {difficulty_name} questions")
-                return []
-                
-            # Extract JSON from response
-            response_text = response.content
-            questions_list = []
-            
+        for attempt in range(max_retries):
             try:
-                if "```json" in response_text:
-                    json_content = response_text.split("```json")[1].split("```")[0].strip()
-                    difficulty_data = json.loads(json_content)
-                else:
-                    # Try to find JSON object in the text
-                    json_pattern = r'(\{[\s\S]*\})' 
-                    match = re.search(json_pattern, response_text)
-                    if match:
-                        json_content = match.group(1)
+                question_request = QuestionRequest(content=prompt, temperature=0.3, max_tokens=8192)
+                response = llm.invoke(question_request.content)
+                
+                if not response or not response.content:
+                    print(f"Attempt {attempt + 1}/{max_retries}: No response for {difficulty_name} questions")
+                    continue
+                
+                response_text = response.content
+                questions_list = []
+                
+                try:
+                    # Extract JSON from response
+                    if "```json" in response_text:
+                        json_content = response_text.split("```json")[1].split("```")[0].strip()
                         difficulty_data = json.loads(json_content)
                     else:
-                        difficulty_data = json.loads(response_text)
-                
-                # Process questions
-                if "questions" in difficulty_data and isinstance(difficulty_data["questions"], list):
-                    # Validate each question before adding
+                        json_pattern = r'(\{[\s\S]*\})'
+                        match = re.search(json_pattern, response_text)
+                        if match:
+                            json_content = match.group(1)
+                            difficulty_data = json.loads(json_content)
+                        else:
+                            difficulty_data = json.loads(response_text)
+                    
+                    # Validate questions
+                    if "questions" not in difficulty_data or not isinstance(difficulty_data["questions"], list):
+                        print(f"Attempt {attempt + 1}/{max_retries}: Invalid response format for {difficulty_name}")
+                        continue
+                    
                     for q in difficulty_data["questions"]:
-                        # Ensure required fields exist
                         if all(key in q for key in ["question_text", "question_type", "options", "correct_answer", "difficulty", "explanation", "points"]):
-                            # Force difficulty to match the current batch
-                            q["difficulty"] = difficulty_name
-                            questions_list.append(q)
+                            # Validate correct_answer matches options
+                            if all(ans in q["options"] for ans in q["correct_answer"]):
+                                q["difficulty"] = difficulty_name
+                                questions_list.append(q)
+                    
+                    if len(questions_list) == questions_needed:
+                        return questions_list
+                    else:
+                        print(f"Attempt {attempt + 1}/{max_retries}: Generated {len(questions_list)}/{questions_needed} {difficulty_name} questions")
                 
-            except (json.JSONDecodeError, Exception) as e:
-                print(f"Error parsing {difficulty_name} questions: {str(e)}")
-                return []
+                except (json.JSONDecodeError, Exception) as e:
+                    print(f"Attempt {attempt + 1}/{max_retries}: Error parsing {difficulty_name} questions: {str(e)}")
+                    continue
                 
-            return questions_list
-                
-        except Exception as e:
-            print(f"Error generating {difficulty_name} questions: {str(e)}")
-            return []
+            except Exception as e:
+                print(f"Attempt {attempt + 1}/{max_retries}: Error generating {difficulty_name} questions: {str(e)}")
+                continue
+        
+        print(f"Failed to generate {questions_needed} {difficulty_name} questions after {max_retries} attempts")
+        return []
     
-    # Run question generation for each difficulty level in parallel
-    difficulty_tasks = [generate_questions_for_difficulty(diff) for diff in difficulties]
-    difficulty_results = await asyncio.gather(*difficulty_tasks)
-    
-    # Combine all questions from different difficulty levels
-    for result in difficulty_results:
-        all_questions.extend(result)
+    # Generate questions for all difficulty levels
+    all_questions = []
+    for diff in difficulties:
+        questions = await generate_questions_for_difficulty(diff)
+        if len(questions) != diff["count"]:
+            # Clean up
+            await recommend_quizzes_controller.recommend_quizzes_repository.delete(created_quiz.id, commit=True)
+            raise ApplicationException(
+                message=f"Failed to generate required {diff['count']} {diff['name']} questions, got {len(questions)}"
+            )
+        all_questions.extend(questions)
     
     # Calculate total points and question count
     total_points = sum(q["points"] for q in all_questions)
     question_count = len(all_questions)
     
-    # If we couldn't generate any questions, raise an error
     if not all_questions:
-        # Clean up by deleting the created quiz
         await recommend_quizzes_controller.recommend_quizzes_repository.delete(created_quiz.id, commit=True)
         raise ApplicationException(message="Failed to generate any quiz questions")
     
@@ -1871,7 +1861,7 @@ async def generate_quiz(
     updated_quiz_attributes = {
         "name": f"Quiz: {module.title}",
         "description": f"Assessment covering key concepts from {lesson.title}",
-        "time_limit": min(60, question_count * 2),  # Estimate 2 minutes per question
+        "time_limit": min(60, question_count * 2),
         "max_score": total_points,
     }
     
@@ -1882,30 +1872,29 @@ async def generate_quiz(
     )
     
     # Create quiz questions
-    question_attributes_list = []
-    for question in all_questions:
-        question_attributes = {
+    question_attributes_list = [
+        {
             "quiz_id": created_quiz.id,
-            "question_text": question["question_text"],
-            "question_type": question["question_type"],
-            "options": question["options"],
-            "correct_answer": question["correct_answer"],
-            "difficulty": question["difficulty"],
-            "explanation": question["explanation"],
-            "points": question["points"]
+            "question_text": q["question_text"],
+            "question_type": q["question_type"],
+            "options": q["options"],
+            "correct_answer": q["correct_answer"],
+            "difficulty": q["difficulty"],
+            "explanation": q["explanation"],
+            "points": q["points"]
         }
-        question_attributes_list.append(question_attributes)
+        for q in all_questions
+    ]
     
     created_questions = await recommend_quiz_questions_controller.recommend_quiz_question_repository.create_many(
         attributes_list=question_attributes_list, commit=True
     )
     
     if not created_questions:
-        # Clean up
         await recommend_quizzes_controller.recommend_quizzes_repository.delete(created_quiz.id, commit=True)
         raise ApplicationException(message="Failed to create quiz questions")
     
-    # Format the response
+    # Format response
     quiz_response = {
         "quiz_id": str(created_quiz.id),
         "name": created_quiz.name,
@@ -1915,16 +1904,16 @@ async def generate_quiz(
         "module_id": str(created_quiz.module_id),
         "questions": [
             {
-                "id": str(question.id),
-                "question_text": question.question_text,
-                "question_type": question.question_type,
-                "options": question.options,
-                "correct_answer": question.correct_answer,
-                "difficulty": question.difficulty,
-                "explanation": question.explanation,
-                "points": question.points,
+                "id": str(q.id),
+                "question_text": q.question_text,
+                "question_type": q.question_type,
+                "options": q.options,
+                "correct_answer": q.correct_answer,
+                "difficulty": q.difficulty,
+                "explanation": q.explanation,
+                "points": q.points,
             }
-            for question in created_questions
+            for q in created_questions
         ]
     }
     
