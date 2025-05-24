@@ -1749,6 +1749,7 @@ async def generate_quiz(
         1. Focus specifically on assessing the module objectives
         2. Align with the recommended content areas
         3. Cover key concepts from the lesson materials
+        4. **IMPORTANT: Generate all questions in the SAME LANGUAGE as the module objectives, lesson learning outcomes, and lesson content provided above. Do not translate or change the language - maintain consistency with the source material language.**
         
         ## Document Content Summary
         {lesson.description}
@@ -1781,6 +1782,7 @@ async def generate_quiz(
         7. Make sure correct_answer exactly matches one of the options
         8. All correct_answer values must be provided as arrays, even for single answers
         9. Each question should be worth {10 if difficulty_name == "hard" else (7 if difficulty_name == "medium" else 5)} points
+        10. ALL CONTENT (questions, options, explanations) must be in the same language as the module and lesson content
         """
         
         for attempt in range(max_retries):
