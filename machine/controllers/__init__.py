@@ -1,4 +1,4 @@
-from .user import StudentController, ProfessorController, AdminController, UserLoginsController
+from .user import UserController
 from .dashboard import StudentCoursesController, ActivitiesController
 from .courses import CoursesController, StudentExercisesController
 from .lessons import LessonsController, DocumentsController, ExtractedTextController
@@ -13,15 +13,11 @@ from .recommend import (
 )
 from .feedback import FeedbackController
 from .conversation import ConversationController
-from .programming_language_config import ProgrammingLanguageConfigController
-from .programming_tc import ProgrammingTestCaseController
-from .programming_submission import ProgrammingSubmissionController
 from .learning_material_gen import LearningMaterialGenController
+from .user_logins import UserLoginsController
 
 __all__ = [
-    "StudentController",
-    "ProfessorController",
-    "AdminController",
+    "UserController",
     "StudentCoursesController",
     "ActivitiesController",
     "CoursesController",
@@ -36,8 +32,8 @@ __all__ = [
     "RecommendLessonsController",
     "LearningPathsController",
     "FeedbackController",
-    "UserLoginsController",
     "ExtractedTextController",
     "ConversationController",
-    "ProgrammingLanguageConfigController"
+    "LearningMaterialGenController",
+    "UserLoginsController",
 ]

@@ -13,9 +13,7 @@ from machine.models import RecommendQuizQuestion
 from machine.controllers import *
 from machine.providers.internal import InternalProvider
 from datetime import datetime, timedelta
-from fastapi.security import OAuth2PasswordBearer
 from uuid import UUID
-from core.utils.auth_utils import verify_token
 from machine.schemas.responses.ai import GenerateCodeExerciseResponse
 from machine.schemas.responses.exercise import CodeExerciseBriefResponse
 from ...schemas.requests.ai import GenerateCodeExerciseRequest, GenerateLearningPathRequest,GenerateQuizRequest
@@ -25,11 +23,8 @@ from dotenv import load_dotenv
 from utils.chunk_manager import ChunkingManager
 from machine.services.workflows.ai_tool_provider import AIToolProvider, LLMModelName
 load_dotenv()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-router = APIRouter(prefix="/ai", tags=["ai"])
+from core.utils.get_current_user import get_current_user
 
-load_dotenv()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 async def analyze_goal_and_timeline(
@@ -418,10 +413,9 @@ async def generate_detailed_learning_path(
 @router.post("/generate-learning-path")
 async def generate_learning_path(
     request: GenerateLearningPathRequest,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
+    user_controller: UserController = Depends(InternalProvider().get_user_controller),
     learning_path_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
@@ -430,18 +424,7 @@ async def generate_learning_path(
     recommend_documents_controller: RecommendDocumentsController = Depends(InternalProvider().get_recommenddocuments_controller),
     lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
 ):
-    """
-    Generate a personalized learning path for a student based on their goals and course content.
-    """
-    # Verify token
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    
-    student = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not student:
-        raise NotFoundException(message="Your account is not allowed to access this feature.")
+    student = current_user
     
     if not request.goal or not request.course_id:
         raise BadRequestException(message="Please provide course_id and goal.")
@@ -452,7 +435,7 @@ async def generate_learning_path(
         raise NotFoundException(message="Course not found.")
     
     # Fetch professor information
-    professor = await professor_controller.professor_repository.first(where_=[Professor.id == course.professor_id])
+    professor = await user_controller.user_repository.first(where_=[Users.id == course.professor_id])
     if not professor:
         raise NotFoundException(message="Professor information not found.")
     
@@ -946,23 +929,13 @@ async def regenerate_lesson_content(
 async def monitor_study_progress(
     recommend_lesson_id: UUID,
     course_id: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
     learning_path_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
     lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller)
 ):
-    # Verify token to get student_id
-    payload = verify_token(token)
-    student_id = payload.get("sub")
-    if not student_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    
-    # Get student record
-    student = await student_controller.student_repository.first(where_=[Student.id == student_id])
-    if not student:
-        raise NotFoundException(message="Your account is not allowed to access this feature.")
+    student = current_user
     
     # Get recommend_lesson
     recommend_lesson = await recommend_lessons_controller.recommend_lessons_repository.first(
@@ -1344,7 +1317,7 @@ class RegenerateLessonRequest(BaseModel):
 @router.post("/regenerate-lesson-content")
 async def regenerate_lesson_content_endpoint(
     request: RegenerateLessonRequest = Body(...),
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
     lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
@@ -1352,10 +1325,7 @@ async def regenerate_lesson_content_endpoint(
     recommend_documents_controller: RecommendDocumentsController = Depends(InternalProvider().get_recommenddocuments_controller),
 ):
     """Regenerate content for a recommended lesson based on analysis result from monitor_study_progress."""
-    payload = verify_token(token)
-    student_id = payload.get("sub")
-    if not student_id:
-        raise BadRequestException(message="Invalid token.")
+    student_id = current_user.id
 
     # Kiểm tra analysis_result
     analysis_result = request.analysis_result
@@ -1406,10 +1376,10 @@ async def regenerate_lesson_content_endpoint(
     )
     return Ok(data=updated_content, message="Lesson content regenerated successfully.")
 
-@router.get("/regenerate-lesson-content/{recommend_lesson_id}") #haven't tested
-async def regenerate_lesson_content_endpoint(
+@router.get("/regenerate-lesson-content/{recommend_lesson_id}")
+async def regenerate_lesson_content_get_endpoint(
     recommend_lesson_id: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
     lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
@@ -1417,10 +1387,7 @@ async def regenerate_lesson_content_endpoint(
     learning_path_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
 ):
     """Regenerate content for a recommended lesson based on issues."""
-    payload = verify_token(token)
-    student_id = payload.get("sub")
-    if not student_id:
-        raise BadRequestException(message="Invalid token.")
+    student_id = current_user.id
 
     student_course = await student_courses_controller.student_courses_repository.first(
         where_=[StudentCourses.student_id == student_id]
@@ -1440,33 +1407,14 @@ async def regenerate_lesson_content_endpoint(
 @router.get("/generate-student-goals/{course_id}")
 async def generate_student_goals(
     course_id: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
+    user_controller: UserController = Depends(InternalProvider().get_user_controller),
     lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     documents_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
     extracted_text_controller: ExtractedTextController = Depends(InternalProvider().get_extracted_text_controller),
 ):
-    """
-    Generate potential learning goals for a student based on course content.
-    
-    Args:
-        request: Contains course_id
-        Other parameters: Controllers for different database models
-        
-    Returns:
-        Dict containing suggested learning goals
-    """
-    # Verify token
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    
-    student = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not student:
-        raise NotFoundException(message="Your account is not allowed to access this feature.")
+    student = current_user
     
     if not course_id:
         raise BadRequestException(message="Please provide course_id.")
@@ -1477,7 +1425,7 @@ async def generate_student_goals(
         raise NotFoundException(message="Course not found.")
     
     # Fetch professor information
-    professor = await professor_controller.professor_repository.first(where_=[Professor.id == course.professor_id])
+    professor = await user_controller.user_repository.first(where_=[Users.id == course.professor_id])
     if not professor:
         raise NotFoundException(message="Professor information not found.")
     
@@ -1607,8 +1555,7 @@ async def generate_student_goals(
 @router.post("/generate-quiz")
 async def generate_quiz(
     request: GenerateQuizRequest,
-    token: str = Depends(oauth2_scheme),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
+    current_user: Users = Depends(get_current_user),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
     lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
@@ -1617,25 +1564,7 @@ async def generate_quiz(
     recommend_quizzes_controller: RecommendQuizzesController = Depends(InternalProvider().get_recommend_quizzes_controller),
     recommend_quiz_questions_controller: RecommendQuizQuestionController = Depends(InternalProvider().get_recommend_quiz_question_controller),
 ):
-    """
-    Generate a quiz based on a recommended lesson.
-    
-    Args:
-        request: Contains recommend_lesson_id and difficulty_distribution
-        Other parameters: Controllers for different database models
-        
-    Returns:
-        Dict containing the generated quiz details
-    """
-    # Verify token
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    
-    student = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not student:
-        raise NotFoundException(message="Your account is not allowed to access this feature.")
+    student = current_user
     
     if not request.module_id:
         raise BadRequestException(message="Please provide module_id.")

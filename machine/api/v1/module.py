@@ -11,31 +11,19 @@ from machine.schemas.responses.document import *
 from machine.controllers import *
 from machine.providers import InternalProvider
 from core.exceptions import NotFoundException, BadRequestException
-from fastapi.security import OAuth2PasswordBearer
-from core.utils.auth_utils import verify_token
-from machine.services.workflows.ai_tool_provider import AIToolProvider, LLMModelName
-import json
-from datetime import timezone
+from core.utils.get_current_user import get_current_user
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 router = APIRouter(prefix="/modules", tags=["recommendation"])
 
 @router.get("/{moduleId}/quizzes", response_model=Ok[ModuleQuizResponse])
 async def get_module_by_quiz(
     moduleId: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
     recommend_quiz_question_controller: RecommendQuizQuestionController = Depends(InternalProvider().get_recommend_quiz_question_controller),
 ):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only Student have the permission to get this module.")
+    user = current_user
     if not moduleId:
         raise BadRequestException(message="Module ID is required.")
 
@@ -92,20 +80,13 @@ async def get_module_by_quiz(
 @router.get("/quizzes/{quizId}", response_model=Ok[QuizExerciseResponse])
 async def get_quiz_exercise(
     quizId: UUID,
-    token: str = Depends(oauth2_scheme),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
+    current_user: Users = Depends(get_current_user),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
     recommend_quizzes_controller: RecommendQuizzesController = Depends(InternalProvider().get_recommend_quizzes_controller),
     recommend_quiz_question_controller: RecommendQuizQuestionController = Depends(InternalProvider().get_recommend_quiz_question_controller),
 ):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only Student have the permission to get this quiz.")
+    user = current_user
     
     
     quiz = await recommend_quizzes_controller.recommend_quizzes_repository.first(
@@ -159,11 +140,10 @@ async def get_quiz_exercise(
     return Ok(data=response_data, message="Successfully fetched quiz details.")
 
 @router.put("/quizzes/{quizId}/submit", response_model=Ok[QuizScoreResponse])
-async def submit_quiz_answers(
+async def submit_quiz_answer(
     quizId: UUID,
     request: QuizAnswerRequest,
-    token: str = Depends(oauth2_scheme),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
+    current_user: Users = Depends(get_current_user),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
     recommend_quizzes_controller: RecommendQuizzesController = Depends(InternalProvider().get_recommend_quizzes_controller),
@@ -171,16 +151,7 @@ async def submit_quiz_answers(
     learning_paths_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
     student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
 ):  
-    # Token verification
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    
-    # Verify student
-    user = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only Students have permission to submit this quiz.")
+    user = current_user
     
     # Fetch quiz
     quiz = await recommend_quizzes_controller.recommend_quizzes_repository.first(
@@ -856,19 +827,12 @@ def merge_issues_summary(current_summary, new_issues):
 @router.put("/quizzes/{quizId}/clear", response_model=Ok[bool])
 async def clear_quiz_answers(
     quizId: UUID,
-    token: str = Depends(oauth2_scheme),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
+    current_user: Users = Depends(get_current_user),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
     recommend_quizzes_controller: RecommendQuizzesController = Depends(InternalProvider().get_recommend_quizzes_controller),
 ):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only Student have the permission to clear answer this quiz.")
+    user = current_user
     quiz = await recommend_quizzes_controller.recommend_quizzes_repository.first(
         where_=[RecommendQuizzes.id == quizId],
     )
@@ -905,19 +869,12 @@ async def clear_quiz_answers(
 @router.get("/{moduleId}/documents", response_model=Ok[DocumentResponse])
 async def get_document(
     moduleId: UUID,
-    token: str = Depends(oauth2_scheme),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
+    current_user: Users = Depends(get_current_user),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
     recommend_documents_controller: RecommendDocumentsController = Depends(InternalProvider().get_recommenddocuments_controller),
 ):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only Student have the permission to get this document.")
+    user = current_user
     
     if not moduleId:
         raise BadRequestException(message="Document ID is required.")

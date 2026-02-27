@@ -64,12 +64,10 @@ class EmailSettings(BaseSettings):
     USE_CREDENTIALS: Optional[bool] = True
     model_config = SettingsConfigDict(extra="ignore")
 
-class JWTSettings(BaseSettings):
-    SECRET_KEY: str
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_SECRET_KEY: str
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+class SupabaseSettings(BaseSettings):
+    SUPABASE_URL: str = ""
+    SUPABASE_ANON_KEY: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
     model_config = SettingsConfigDict(extra="ignore")
 
 class ExcelLinkSettings(BaseSettings):
@@ -88,31 +86,23 @@ class AWS3Settings(BaseSettings):
     AWS3_BUCKET_NAME: Optional[str] = None
     model_config = SettingsConfigDict(extra="ignore")
 
-class Judge0Settings(BaseSettings):
-    # JUDGE0_URL is not in your .env, RAPIDAPI_KEY is
-    RAPIDAPI_KEY: Optional[str] = None
-    # Defaults if you want them, but better to load from .env if they are there
-    JUDGE0_URL: str = "https://judge0-ce.p.rapidapi.com"
-    RAPIDAPI_HOST: str = "judge0-ce.p.rapidapi.com"
-    model_config = SettingsConfigDict(extra="ignore")
 
 # The final Settings class will inherit model_config from CoreSettings (and others if they also define it,
 # but the first one in MRO with a complete config usually takes precedence for common keys like 'extra').
 # It's good practice for the MAIN settings accumulator to define its own comprehensive model_config.
 class Settings(
-    CoreSettings, # CoreSettings already has a model_config
+    CoreSettings,
     TestSettings,
     DatabaseSettings,
     RedisSettings,
     EmailSettings,
-    JWTSettings,
     ExcelLinkSettings,
-    GoogleAPISettings, # Renamed
+    GoogleAPISettings,
     Neo4jSettings,
     GoogleGenAISettings,
     OpenAISettings,
     AWS3Settings,
-    Judge0Settings
+    SupabaseSettings
 ):
     # You can define a specific model_config here too, it will override/merge.
     # For simplicity, relying on CoreSettings' model_config is fine if it covers the .env loading.

@@ -1,10 +1,7 @@
 import os
 from fastapi import APIRouter, Depends, Request, HTTPException
 from dotenv import load_dotenv
-from fastapi.security import OAuth2PasswordBearer
-from machine.controllers import *
-from machine.providers import InternalProvider
-from core.utils.auth_utils import verify_token
+from core.utils.get_current_user import get_current_user
 from core.exceptions import *
 from machine.models import *
 from sqlalchemy.sql import func, and_, or_
@@ -15,13 +12,14 @@ import json
 from datetime import timedelta
 import re
 from pydantic import BaseModel, Field
+from machine.providers import InternalProvider
+from machine.controllers import CoursesController, RecommendLessonsController
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 
 class AssessmentRequest(BaseModel):
-    student_goal: str = Field(..., description="Learning goal of the student")
+    user_goal: str = Field(..., description="Learning goal of the user")
     lessons: List[Dict] = Field(..., description="List of lessons with progress data")
     
 router = APIRouter(prefix="/progress_tracking", tags=["progress_tracking"])
@@ -34,7 +32,7 @@ chunking_manager = ChunkingManager(
         max_output_tokens=8000
     )
  
-def generate_standard_prompt(student: Student, student_goal: str, lessons: list) -> str:
+def generate_standard_prompt(user: Users, user_goal: str, lessons: list) -> str:
     """
     Generate a verbose, conversational prompt for the LLM to create a Rubric-Based Standard assessment in English,
     analyzing based on specific criteria (Theoretical Knowledge, Coding Skills if applicable, Effort), adaptable to courses with or without coding exercises,
@@ -44,11 +42,11 @@ def generate_standard_prompt(student: Student, student_goal: str, lessons: list)
         Hello! You are an education assessment expert. I need your help evaluating a student's learning progress. 
 
         ### Student Information:
-        - **Name**: {student.fullname}
-        - **Email**: {student.email}
+        - **Name**: {user.full_name}
+        - **Email**: {user.email}
 
         ### Learning Goal:
-        "{student_goal}"  
+        "{user_goal}"  
         This is the target they need to achieve before the midterm exam.
 
         ### Lesson Data:
@@ -74,8 +72,8 @@ def generate_standard_prompt(student: Student, student_goal: str, lessons: list)
         {{
         "student_assessment": {{
             "student_info": {{
-            "name": "{student.fullname}",
-            "email": "{student.email}"
+            "name": "{user.full_name}",
+            "email": "{user.email}"
             }},
             "learning_goal": "{student_goal}",
             "assessment_date": "2025-03-31",
@@ -104,42 +102,29 @@ def generate_standard_prompt(student: Student, student_goal: str, lessons: list)
     return prompt
 
 
-@router.post("/student/{courseId}/assessment")
+@router.post("/users/{courseId}/assessment")
 async def get_assessment(
     courseId: str,
     request: AssessmentRequest,
-    token: str = Depends(oauth2_scheme),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
+    current_user: Users = Depends(get_current_user),
     course_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
 ):
     print("Logging", request)
-    # Verify token and extract user_id
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-
-    if not user_id:
-        raise UnauthorizedException("Invalid token")
-    
-    # Fetch student
-    student = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not student:
-        raise NotFoundException("Student not found")
-    
     # Fetch course
     course = await course_controller.courses_repository.first(where_=[Courses.id == courseId])
     if not course:
         raise NotFoundException("Course not found")
 
     
-    # Extract student_goal and lessons
-    student_goal = request.student_goal
+    # Extract user_goal and lessons
+    user_goal = request.user_goal
     lessons = request.lessons
     
-    if not student_goal or not lessons:
-        raise HTTPException(status_code=400, detail="Missing student_goal or lessons in request body")
+    if not user_goal or not lessons:
+        raise HTTPException(status_code=400, detail="Missing user_goal or lessons in request body")
     
     # Generate prompt for LLM
-    prompt = generate_standard_prompt(student, student_goal, lessons)
+    prompt = generate_standard_prompt(current_user, user_goal, lessons)
     
     # Call LLM API to get STAR assessment
     try:
@@ -190,24 +175,13 @@ def add_time_spent(existing_time_spent, new_time_spent_str):
     
     return existing_time_spent + new_time_delta
 
-@router.post("/student/recommend_lessons/{recommend_lesson_id}/time_spent")
+@router.post("/users/recommend_lessons/{recommend_lesson_id}/time_spent")
 async def update_time_spent(
     recommend_lesson_id: str,
     request: UpdateTimeSpentRequest,
-    token: str = Depends(oauth2_scheme),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
+    current_user: Users = Depends(get_current_user),
     recommend_lesson_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
 ):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    
-    if not user_id:
-        raise UnauthorizedException("Invalid token")
-        
-    student = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not student:
-        raise NotFoundException("Student not found")
-        
     time_spent_str = request.time_spent
     if not time_spent_str:
         raise HTTPException(status_code=400, detail="Missing time_spent in request body")

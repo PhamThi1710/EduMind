@@ -1,26 +1,17 @@
 from fastapi import APIRouter, Depends
-from fastapi.security import OAuth2PasswordBearer
-from core.utils.auth_utils import verify_token
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+from core.utils.get_current_user import get_current_user
+from machine.models.users import Users
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+
 @router.get("/protected")
-async def protected_route(token: str = Depends(oauth2_scheme)):
-    """
-    Test Protected Route with Bearer Token
-    This endpoint is protected, so only users with valid tokens can access it.
-    Example of payload:
-    {
-    "message": "Token is valid",
-    "user_info": {
-        "sub": "8fb9b551-d176-4966-bc6b-f52fdfca14c7" => This is the id of the user, 
-        "exp": 1736269971
+async def protected_route(current_user: Users = Depends(get_current_user)):
+    return {
+        "message": "Token is valid",
+        "user_info": {
+            "id": str(current_user.id),
+            "email": current_user.email,
+            "role": current_user.role,
         }
     }
-    """
-    
-    
-    payload = verify_token(token)
-    return {"message": "Token is valid", "user_info": payload}

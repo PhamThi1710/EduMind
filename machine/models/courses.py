@@ -12,7 +12,7 @@ class Courses(Base, TimestampMixin):
 
     id = Column(UUID, primary_key=True, default=uuid4)
     name = Column(String(255), nullable=False)
-    professor_id = Column(UUID, ForeignKey("professors.id",ondelete="CASCADE"), nullable=False)
+    owner_id = Column(UUID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     learning_outcomes = Column(ARRAY(Text), nullable=True)
     start_date = Column(Date, nullable=True)
     end_date = Column(Date, nullable=True)
@@ -20,12 +20,11 @@ class Courses(Base, TimestampMixin):
     image_url = Column(String, nullable=True)
     nCredit = Column(Integer, nullable=True)
     nSemester = Column(Integer, nullable=True)
-    class_name=Column(String, nullable=True)
-    courseID = Column(String, nullable=True) # Course ID. EX: CS101
-    createdByAdminID = Column(String, nullable=True)
+    class_name = Column(String, nullable=True)
+    courseID = Column(String, nullable=True)  # Course ID. EX: CS101
 
     student_courses = relationship("StudentCourses", back_populates="course")
-    professor = relationship("Professor", back_populates="courses")
+    owner = relationship("Users", back_populates="courses", foreign_keys=[owner_id])
     lessons = relationship("Lessons", back_populates="course")
     exercises = relationship("Exercises", back_populates="course")
     learning_paths = relationship("LearningPaths", back_populates="course")

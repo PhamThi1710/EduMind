@@ -61,8 +61,8 @@ class IssuesSummary(BaseModel):
 class StudentCourses(Base):
     __tablename__ = "student_courses"
 
-    student_id = Column(UUID, ForeignKey('student.id',ondelete="CASCADE"), primary_key=True, nullable=False)
-    course_id = Column(UUID, ForeignKey('courses.id',ondelete="CASCADE"), primary_key=True, nullable=False)
+    user_id = Column(UUID, ForeignKey('users.id', ondelete="CASCADE"), primary_key=True, nullable=False)
+    course_id = Column(UUID, ForeignKey('courses.id', ondelete="CASCADE"), primary_key=True, nullable=False)
     last_accessed = Column(DateTime, default=func.now(), nullable=True)
     completed_lessons = Column(Integer, default=0, nullable=True)
     time_spent = Column(Interval, default=timedelta(0), nullable=True) 
@@ -74,4 +74,4 @@ class StudentCourses(Base):
     # Summary of issues found in the course
 
     course = relationship("Courses", back_populates="student_courses")
-    student = relationship("Student", back_populates="student_courses")
+    user = relationship("Users", back_populates="student_courses")

@@ -1,52 +1,50 @@
 from typing import List
-from core.response import Ok
-from machine.models import *
+from uuid import UUID
+
 from fastapi import APIRouter, Depends
-from machine.schemas.requests import *
-from machine.schemas.responses.progress_tracking import *
-from machine.controllers import *
+
+from core.exceptions import BadRequestException, NotFoundException
+from core.response import Ok
+from core.utils.get_current_user import get_current_user
+from machine.controllers import (
+    CoursesController,
+    ExercisesController,
+    LearningPathsController,
+    LessonsController,
+    RecommendLessonsController,
+    StudentCoursesController,
+    StudentExercisesController,
+)
+from machine.models import Courses, Exercises, Lessons, RecommendLessons, StudentCourses, StudentExercises, Users
 from machine.providers import InternalProvider
-from core.exceptions import NotFoundException, BadRequestException
-from fastapi.security import OAuth2PasswordBearer
-from core.utils.auth_utils import verify_token
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+from machine.schemas.responses.progress_tracking import *
+
 router = APIRouter(prefix="/professor_progress_tracking", tags=["professor_progress_tracking"])
+
 
 @router.get("/courses/{course_id}/grades", response_model=Ok[GetCourseGradesResponse])
 async def get_grades(
     course_id: UUID,
-    token: str = Depends(oauth2_scheme),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
+    current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
     student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
     student_exercises_controller: StudentExercisesController = Depends(InternalProvider().get_studentexercises_controller),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
     lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     learning_paths_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
+    user_controller=Depends(InternalProvider().get_user_controller),
 ):
-    """
-    Get the grades for a course
-    """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to get grades.")
-
+    """Get the grades for a course (requires course ownership)."""
     course = await courses_controller.courses_repository.first(
         where_=[Courses.id == course_id],
         relations=[Courses.student_courses, Courses.exercises],
     )
     if not course:
         raise NotFoundException(message="No courses found.")
-    if not course.professor_id == user.id:
-        raise BadRequestException(message="You are not authorized to access the grades course.")
+    if course.owner_id != current_user.id:
+        raise BadRequestException(message="You are not authorized to access the grades for this course.")
+
     student_courses = await student_courses_controller.student_courses_repository.get_many(
         where_=[StudentCourses.course_id == course_id]
     )
@@ -54,16 +52,18 @@ async def get_grades(
         raise NotFoundException(message="No students found in the course.")
 
     students_list = []
-
     for student_course in student_courses:
-        student = await student_controller.student_repository.first(
-            where_=[Student.id == student_course.student_id]
+        user = await user_controller.user_repository.first(where_=[Users.id == student_course.user_id])
+        if not user:
+            continue
+        student_id = user.id
+        student_name = user.full_name or ""
+        student_email = user.email
+        student_mssv = user.student_id_number or ""
+
+        learning_path_progress = await learning_paths_controller.get_learning_path(
+            user_id=student_id, course_id=course_id
         )
-        student_id = student.id
-        student_name = student.name
-        student_email = student.email
-        student_mssv = student.mssv
-        learning_path_progress = await learning_paths_controller.get_learning_path( user_id=student_id, course_id=course_id)
         learning_path = None
         if learning_path_progress:
             recommend_lessons = await recommend_lessons_controller.recommend_lessons_repository.get_many(
@@ -71,23 +71,22 @@ async def get_grades(
             )
             lessons = []
             if recommend_lessons:
-                for recommend_lesson in recommend_lessons:
+                for rec_lesson in recommend_lessons:
                     lesson = await lessons_controller.lessons_repository.first(
-                        where_=[Lessons.id == recommend_lesson.lesson_id]
+                        where_=[Lessons.id == rec_lesson.lesson_id]
                     )
                     if lesson:
                         lessons.append(LessonInLearningPath(
-                            lesson_id=recommend_lesson.id,
+                            lesson_id=rec_lesson.id,
                             lesson_name=lesson.title,
                             description=lesson.description,
-                            progress=recommend_lesson.progress,
+                            progress=rec_lesson.progress,
                         ))
-
             learning_path = LearningPathProgressInCourse(
-                    learning_path_id=learning_path_progress.id,
-                    progress=learning_path_progress.progress,
-                    objective=learning_path_progress.objective,
-                    lessons=lessons,
+                learning_path_id=learning_path_progress.id,
+                progress=learning_path_progress.progress,
+                objective=learning_path_progress.objective,
+                lessons=lessons,
             )
 
         exercises = await exercises_controller.exercises_repository.get_many(
@@ -96,19 +95,16 @@ async def get_grades(
         exercise_student = []
         for exercise in exercises:
             student_exercise = await student_exercises_controller.student_exercises_repository.first(
-                where_=[StudentExercises.exercise_id == exercise.id, StudentExercises.student_id == student_id],
+                where_=[StudentExercises.exercise_id == exercise.id, StudentExercises.user_id == student_id],
             )
-            if not student_exercise:
-                score = 0
-            else:
-                score = student_exercise.score
+            score = student_exercise.score if student_exercise else 0
             exercise_student.append(ExeriseStudentProgressInCourse(
                 exercise_id=exercise.id,
                 exercise_name=exercise.name,
                 score=score,
             ))
 
-        total_score = sum(exercise.score for exercise in exercise_student)
+        total_score = sum(e.score for e in exercise_student)
         average_score = total_score / len(exercise_student) if exercise_student else 0.0
 
         students_list.append(StudentProgressInCourse(
@@ -123,65 +119,46 @@ async def get_grades(
 
     return Ok(data=GetCourseGradesResponse(students_list=students_list), message="Successfully fetched the grades course.")
 
+
 @router.get("/courses/{course_id}/exercises/{exercise_id}/grades", response_model=Ok[GetExerciseGradesResponse])
 async def get_exercise_grades(
     course_id: UUID,
     exercise_id: UUID,
-    token: str = Depends(oauth2_scheme),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
+    current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
     student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
     student_exercises_controller: StudentExercisesController = Depends(InternalProvider().get_studentexercises_controller),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
+    user_controller=Depends(InternalProvider().get_user_controller),
 ):
-    """
-    Get the grades for a course
-    """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to get grades.")
-
+    """Get per-student exercise grades for a course (requires course ownership)."""
     course = await courses_controller.courses_repository.first(
         where_=[Courses.id == course_id],
         relations=[Courses.student_courses, Courses.exercises],
     )
     if not course:
         raise NotFoundException(message="No courses found.")
-    
-    if course.professor_id != user.id:
-        raise BadRequestException(message="You are not authorized to access the grades course.")
-    
+    if course.owner_id != current_user.id:
+        raise BadRequestException(message="You are not authorized to access the grades for this course.")
+
     student_courses = await student_courses_controller.student_courses_repository.get_many(
         where_=[StudentCourses.course_id == course_id]
     )
     if not student_courses:
         raise NotFoundException(message="No students found in the course.")
-    students_list = []
 
+    exercise = await exercises_controller.exercises_repository.first(where_=[Exercises.id == exercise_id])
+    students_list = []
     for student_course in student_courses:
-        student = await student_controller.student_repository.first(
-            where_=[Student.id == student_course.student_id]
-        )
-        student_id = student.id
-        student_name = student.name
-        student_email = student.email
-        student_mssv = student.mssv
-        exercise = await exercises_controller.exercises_repository.first(
-            where_=[Exercises.id == exercise_id],
-        )
+        user = await user_controller.user_repository.first(where_=[Users.id == student_course.user_id])
+        if not user:
+            continue
+        student_id = user.id
         student_exercise = await student_exercises_controller.student_exercises_repository.first(
-            where_=[StudentExercises.exercise_id == exercise.id, StudentExercises.student_id == student_id],
+            where_=[StudentExercises.exercise_id == exercise.id, StudentExercises.user_id == student_id],
         )
         if not student_exercise:
-            score = 0
-            question_answers = []
-            completion_date = None
+            score, completion_date, question_answers = 0, None, []
         else:
             score = student_exercise.score
             completion_date = student_exercise.completion_date
@@ -189,17 +166,18 @@ async def get_exercise_grades(
                 AnswerQuizExercise(
                     question=answer.get('question', '') if isinstance(answer, dict) else '',
                     answers=answer.get('answers', []) if isinstance(answer, dict) else []
-                ) for answer in (student_exercise.answer or [])
+                )
+                for answer in (student_exercise.answer or [])
             ]
-        
+
         students_list.append(StudentProgressInExercise(
             student_id=student_id,
-            student_name=student_name,
-            student_email=student_email,
-            student_mssv=student_mssv,
+            student_name=user.full_name or "",
+            student_email=user.email,
+            student_mssv=user.student_id_number or "",
             score=score,
             date=completion_date,
             question_answers=question_answers,
         ))
 
-    return Ok(data=GetExerciseGradesResponse(students_list=students_list,type='quiz'), message="Successfully fetched the grades exercise.")
+    return Ok(data=GetExerciseGradesResponse(students_list=students_list, type='quiz'), message="Successfully fetched the grades exercise.")

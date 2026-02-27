@@ -1,4 +1,4 @@
-from .user import StudentRepository, ProfessorRepository, AdminRepository, UserLoginsRepository
+from .user import UserRepository
 from .student_courses import StudentCoursesRepository
 from .activities import ActivitiesRepository
 from .courses import CoursesRepository
@@ -7,28 +7,24 @@ from .exercises import ExercisesRepository
 from .student_exercises import StudentExercisesRepository
 from .documents import DocumentsRepository, ExtractedTextRepository
 from .modules import ModulesRepository
-from .recommend_quizzes import RecommendQuizzesRepository,RecommendQuizQuestionRepository
+from .recommend_quizzes import RecommendQuizzesRepository, RecommendQuizQuestionRepository
 from .recommend_documents import RecommendDocumentsRepository
 from .learning_paths import LearningPathsRepository
 from .recommend_lessons import RecommendLessonsRepository
 from .feedback import FeedbackRepository
-from .coding_assistant import ConversationRepository, MessageRepository
-from .programming_language_config import ProgrammingLanguageConfigRepository
-from .programming_submission import ProgrammingSubmissionRepository
-from .programming_tc import ProgrammingTestCaseRepository
+from .conversation import ConversationRepository, MessageRepository
+from .user_logins import UserLoginsRepository
 
 __all__ = [
-    "StudentRepository",
-    "ProfessorRepository",
-    "AdminRepository",
+    "UserRepository",
     "StudentCoursesRepository",
     "ActivitiesRepository",
     "CoursesRepository",
     "LessonsRepository",
     "ExercisesRepository",
-    "StudentLessonsRepository",
     "StudentExercisesRepository",
     "DocumentsRepository",
+    "ExtractedTextRepository",
     "ModulesRepository",
     "RecommendDocumentsRepository",
     "LearningPathsRepository",
@@ -36,6 +32,7 @@ __all__ = [
     "RecommendQuizzesRepository",
     "RecommendQuizQuestionRepository",
     "FeedbackRepository",
+    "ConversationRepository",
+    "MessageRepository",
     "UserLoginsRepository",
-    "ExtractedTextRepository",
 ]

@@ -1,11 +1,8 @@
 from core.db import Base  # noqa: F401, This import is necessary for Alembic to detect the models
 
-from .student import Student
-from .professor import Professor 
-from .admin import Admin
-
-from .courses import Courses  
-from .student_courses import StudentCourses  
+from .users import Users
+from .courses import Courses
+from .student_courses import StudentCourses
 from .activities import Activities
 from .lessons import Lessons
 from .exercises import Exercises
@@ -19,5 +16,4 @@ from .learning_paths import LearningPaths
 from .feedback import Feedback
 from .user_logins import UserLogins
 from .extracted_text import ExtractedText
-from .coding_assistant import *
-from .coding_submission import *
+from .conversation import Conversation, Message

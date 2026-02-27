@@ -6,29 +6,18 @@ from machine.schemas.requests import *
 from machine.schemas.responses.recommend import *
 from machine.controllers import *
 from machine.providers import InternalProvider
-from core.utils.auth_utils import verify_token
+from core.utils.get_current_user import get_current_user
 from machine.schemas.responses.courses import *
-from fastapi.security import OAuth2PasswordBearer
 from core.exceptions import NotFoundException, BadRequestException
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 router = APIRouter(prefix="/recommend_lessons", tags=["recommendation"])
 
 
 @router.get("/{recommendLessonId}", response_model=Ok[RecommendLessonResponse])
 async def recommend_lesson(
     recommendLessonId: UUID,
-    token : str = Depends(oauth2_scheme),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
+    current_user: Users = Depends(get_current_user),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
 ):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only Student have the permission to get this recommend lesson.")
     # Fetch the lesson recommendation details
     recommend_lesson = await recommend_lessons_controller.recommend_lessons_repository.first(
         where_=[RecommendLessons.id == recommendLessonId],
@@ -38,7 +27,7 @@ async def recommend_lesson(
     if not recommend_lesson:
         raise NotFoundException(message="Recommend Lesson not found for the given ID.")
 
-    if not recommend_lesson.learning_path.student_id == user.id:
+    if not recommend_lesson.learning_path.user_id == current_user.id:
         raise NotFoundException(message="You are not authorized to access this recommend lesson.")
     
     lesson = recommend_lesson.lesson
@@ -77,21 +66,9 @@ async def recommend_lesson(
 @router.get("/{recommendLessonId}/bookmark")
 async def bookmark_recommend_lesson(
     recommendLessonId: str,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
 ):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    
-    check_student_role = await student_controller.student_repository.first(
-        where_=[Student.id == user_id],
-    )
-    
-    if not check_student_role:
-        raise NotFoundException(message="You are not a student. Please log in as a student to access this feature.")
 
     # Fetch the lesson recommendation details
     recommend_lesson = await recommend_lessons_controller.recommend_lessons_repository.first(

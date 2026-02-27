@@ -20,11 +20,10 @@ from fastapi import File, Form, UploadFile, Depends
 from core.settings import settings
 from core.repository import SynchronizeSessionEnum
 import uuid
-from fastapi.security import OAuth2PasswordBearer
-from core.utils.auth_utils import verify_token
+from core.utils.get_current_user import get_current_user
 from core.utils.file import generate_presigned_url
 from utils.file_processor import process_document
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
 router = APIRouter(prefix="/lessons", tags=["lesson"])
 
 
@@ -34,28 +33,18 @@ async def create_new_lesson(
     description: str = Form(...),
     course_id: UUID = Form(...),
     learning_outcomes: List[str] = Form(...),
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     lesson_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     course_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
 ):
     """
     Creates a new lesson with optional documents and descriptions.
     """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to create lesson.")
-
     course = await course_controller.courses_repository.first(where_=[Courses.id == course_id])
     if not course:
         raise NotFoundException(message="Course not found for the given ID.")
 
-    if user.id != course.professor_id:
+    if current_user.id != course.owner_id:
         raise BadRequestException(message="You are not allowed to create a lesson in this course.")
 
     # Modify the order retrieval to match the repository's expected format
@@ -128,25 +117,12 @@ async def update_lesson(
     title: str = Form(...),
     description: str = Form(...),
     learning_outcomes: List[str] = Form(...),
-    # files: List[UploadFile] = File(None),
-    # description_file: List[str] = Form(None),
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     lesson_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
-    # document_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
 ):
     """
     Updates an existing lesson with optional documents and descriptions.
     """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to update this lesson.")
-    
     lesson = await lesson_controller.lessons_repository.first(
         where_=[Lessons.id == lesson_id],
         relations=[Lessons.course],
@@ -157,7 +133,7 @@ async def update_lesson(
     if not lesson.course:
         raise NotFoundException(message="Lesson not associated with any course.")
 
-    if user.id != lesson.course.professor_id:
+    if current_user.id != lesson.course.owner_id:
         raise BadRequestException(message="You are not allowed to update lesson in this course.")
     
     # Update the lesson
@@ -218,24 +194,16 @@ async def update_lesson(
 @router.delete("/{lesson_id}", response_model=Ok[DeleteLessonResponse])
 async def delete_lesson(
     lesson_id: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     lesson_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     recommend_lesson_controller: RecommendLessonsController = Depends(
         InternalProvider().get_recommendlessons_controller
     ),
     document_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
 ):
     """
     Deletes a lesson by its ID, ensuring all related entities are also deleted.
     """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to delete this lesson.")
     lesson = await lesson_controller.lessons_repository.first(
         where_=[Lessons.id == lesson_id],
         relations=[
@@ -248,7 +216,7 @@ async def delete_lesson(
         raise NotFoundException(message="Lesson not found for the given ID.")
     if not lesson.course:
         raise NotFoundException(message="Lesson not associated with any course.")
-    if not lesson.course.professor_id == user.id:
+    if not lesson.course.owner_id == current_user.id:
         raise BadRequestException(message="You are not allowed to delete lesson in this course.")
     
     try:
@@ -294,26 +262,15 @@ async def add_documents(
     lesson_id: UUID = Form(...),
     files: List[UploadFile] = File(...),
     descriptions: List[str] = Form(...),
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     document_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
     lesson_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     extracted_text_controller: ExtractedTextController = Depends(InternalProvider().get_extracted_text_controller),
 ):
     """
     Adds multiple documents to a specific lesson.
     """
-    # Xác thực người dùng
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to upload documents.")
-
-    # Kiểm tra bài học
+    # Verify lesson
     lesson = await lesson_controller.lessons_repository.first(
         where_=[Lessons.id == lesson_id],
         relations=[Lessons.course],
@@ -358,16 +315,9 @@ async def add_documents(
 @router.get("/{lessonId}", response_model=Ok[PutLessonResponse])
 async def get_lesson(
     lessonId: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     lesson_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
 ):
-    """
-    Retrieves a specific lesson by its ID along with associated documents.
-    """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
     
     lesson = await lesson_controller.lessons_repository.first(
         where_=[Lessons.id == lessonId],
@@ -410,16 +360,12 @@ async def get_lesson(
 @router.get("/{lessonId}/documents", response_model=Ok[List[GetDocumentResponse]])
 async def get_documents(
     lessonId: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     document_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
 ):
     """
     Retrieves all documents associated with a specific lesson.
     """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
 
     documents = await document_controller.documents_repository.get_many(where_=[Documents.lesson_id == lessonId])
 

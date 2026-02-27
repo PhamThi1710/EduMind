@@ -1,10 +1,7 @@
 import machine.controllers as ctrl
 from fastapi import APIRouter, Depends, Path, Query
 from core.response import Ok
-from machine.schemas.programming_submission import ProgrammingSubmissionCreateResponse, ProgrammingSubmissionItemSchema, ProgrammingSubmissionSchema
-from machine.schemas.requests.conversation import InvokeCodingAssistantSchema
 from machine.schemas.requests.exercise import  *
-from machine.schemas.responses.conversation import MessageResponseSchema
 from machine.schemas.responses.exercise import  *
 from machine.providers import InternalProvider
 from machine.controllers import *
@@ -12,41 +9,28 @@ from machine.models import *
 from core.exceptions import NotFoundException, BadRequestException
 from uuid import UUID
 from fastapi import  Depends
-from fastapi.security import OAuth2PasswordBearer
-from core.utils.auth_utils import verify_token
+from core.utils.get_current_user import get_current_user
 from starlette.responses import StreamingResponse
-from machine.schemas.programming_exercise import *
 from machine.schemas.code_solution import CodeSolutionResponse
 
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 router = APIRouter(prefix="/exercises", tags=["exercises"])
 @router.post("/quizzes", response_model=Ok[ExerciseQuizResponse])
 async def add_exercises(
     body: ExerciseRequest,
-    token : str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
     course_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
 ):
     """
     Adds a new exercise with questions to a lesson.
     """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to create exercise for this course.")
-    
-    # Validate course existence
     course = await course_controller.courses_repository.first(
         where_=[Courses.id == body.course_id],
     )
     if not course:
         raise NotFoundException(message="Course not found for the given ID.")
-    if not course.professor_id == user.id:
+    if not course.owner_id == current_user.id:
         raise BadRequestException(message="You are not allowed to create exercise for this course.")
     
     # Validate and process questions
@@ -147,20 +131,9 @@ async def add_exercises(
 @router.get("/{exercise_id}/quizzes", response_model=Ok[ExerciseQuizResponse])
 async def get_exercise(
     exercise_id: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
 ):
-    """
-    Retrieves an existing quiz exercise by ID.
-    """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    professor = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not professor:
-        raise NotFoundException(message="Your account is not allowed to get detail quiz.")
     
     # Fetch the exercise
     exercise = await exercises_controller.exercises_repository.first(
@@ -213,36 +186,25 @@ async def get_exercise(
 async def update_exercise(
     exercise_id: UUID,
     body: ExerciseRequest,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
     course_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
 ):
     """
     Updates an existing exercise with new details and questions.
     """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to update this exercise.")
-    
-    # Validate exercise existence
     exercise = await exercises_controller.exercises_repository.first(
         where_=[Exercises.id == exercise_id]
     )
     if not exercise:
         raise NotFoundException(message="Exercise not found for the given ID.")
 
-    # Validate course existence
     course = await course_controller.courses_repository.first(
         where_=[Courses.id == body.course_id],
     )
     if not course:
         raise NotFoundException(message="Course not found for the given ID.")
-    if not course.professor_id == user.id:
+    if not course.owner_id == current_user.id:
         raise BadRequestException(message="You are not allowed to update exercise for this course.")
     
     # Validate and process questions
@@ -347,34 +309,24 @@ async def update_exercise(
 @router.delete("/{exercise_id}/quizzes", response_model=Ok[ExerciseQuizResponse])
 async def delete_exercise(
     exercise_id: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
     course_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
     student_exercise_controller: StudentExercisesController = Depends(InternalProvider().get_studentexercises_controller),
 ):
     """
     Deletes an existing exercise by ID.
     """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to delete this exercise.")
-    # Validate exercise existence
     exercise = await exercises_controller.exercises_repository.first(
         where_=[Exercises.id == exercise_id],
-        relations=[Exercises.course,
-                   Exercises.student_exercises],
+        relations=[Exercises.course, Exercises.student_exercises],
     )
     if not exercise:
         raise NotFoundException(message="Exercise not found for the given ID.")
     if not exercise.course:
         raise NotFoundException(message="Exercise not associated with any course.")
     
-    if not exercise.course.professor_id == user.id:
+    if not exercise.course.owner_id == current_user.id:
         raise BadRequestException(message="You are not allowed to delete exercise for this lesson.")
     # Delete the exercise
     await exercises_controller.exercises_repository.delete(
@@ -426,29 +378,19 @@ async def delete_exercise(
 @router.post("/code", response_model=Ok[ExerciseCodeResponse])
 async def add_code_exercise(
     body: ExerciseCodeRequest,
-    token : str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
     course_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
 ):
     """
     Adds a new code exercise to a course.
     """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to create exercise for this course.")
-    
-    # Validate course existence
     course = await course_controller.courses_repository.first(
         where_=[Courses.id == body.course_id],
     )
     if not course:
         raise NotFoundException(message="Course not found for the given ID.")
-    if not course.professor_id == user.id:
+    if not course.owner_id == current_user.id:
         raise BadRequestException(message="You are not allowed to create exercise for this course.")
     
     # Validate and process questions
@@ -559,17 +501,9 @@ async def add_code_exercise(
 @router.get("/{exercise_id}/code", response_model=Ok[ExerciseCodeResponse])
 async def get_code_exercise(
     exercise_id: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
 ):
-    """
-    Retrieves an existing code exercise by ID.
-    """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
 
     # Fetch the exercise
     exercise = await exercises_controller.exercises_repository.first(
@@ -635,23 +569,13 @@ async def get_code_exercise(
 async def update_code_exercise(
     exercise_id: UUID,
     body: ExerciseCodeRequest,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
     course_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
 ):
     """
     Updates an existing code exercise with new details and questions.
     """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to update this exercise.")
-    
-    # Validate exercise existence
     exercise = await exercises_controller.exercises_repository.first(
         where_=[Exercises.id == exercise_id]
     )
@@ -661,13 +585,12 @@ async def update_code_exercise(
     if exercise.type != ExerciseType.code:
         raise BadRequestException(message="This is not a code exercise.")
 
-    # Validate course existence
     course = await course_controller.courses_repository.first(
         where_=[Courses.id == body.course_id],
     )
     if not course:
         raise NotFoundException(message="Course not found for the given ID.")
-    if not course.professor_id == user.id:
+    if not course.owner_id == current_user.id:
         raise BadRequestException(message="You are not allowed to update exercise for this course.")
     
     # Validate and process questions
@@ -780,28 +703,17 @@ async def update_code_exercise(
 @router.delete("/{exercise_id}/code", response_model=Ok[ExerciseCodeResponse])
 async def delete_code_exercise(
     exercise_id: UUID,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
     course_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
     student_exercise_controller: StudentExercisesController = Depends(InternalProvider().get_studentexercises_controller),
 ):
     """
     Deletes an existing code exercise by ID.
     """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-    if not user:
-        raise NotFoundException(message="Only professors have the permission to delete this exercise.")
-    
-    # Validate exercise existence
     exercise = await exercises_controller.exercises_repository.first(
         where_=[Exercises.id == exercise_id],
-        relations=[Exercises.course,
-                   Exercises.student_exercises],
+        relations=[Exercises.course, Exercises.student_exercises],
     )
     if not exercise:
         raise NotFoundException(message="Exercise not found for the given ID.")
@@ -812,7 +724,7 @@ async def delete_code_exercise(
     if not exercise.course:
         raise NotFoundException(message="Exercise not associated with any course.")
     
-    if not exercise.course.professor_id == user.id:
+    if not exercise.course.owner_id == current_user.id:
         raise BadRequestException(message="You are not allowed to delete exercise for this course.")
     
     # Delete student exercises first
@@ -879,228 +791,6 @@ async def delete_code_exercise(
         ),
         message="Code exercise successfully deleted."
     )
-
-
-@router.get(
-    "/code/{coding_exercise_id}/conversation/messages",
-    response_model=Ok[list[MessageResponseSchema]]
-)
-async def get_coding_assistant_conversation_messages(
-    coding_exercise_id: UUID = Path(...),
-    token: str = Depends(oauth2_scheme),
-    ctrl: ctrl.ExercisesController = Depends(InternalProvider().get_exercises_controller)
-):
-    payload = verify_token(token)
-    user_id = UUID(payload.get("sub"))
-
-    messages = await ctrl.get_coding_assistant_conversation_messages(
-        coding_exercise_id=coding_exercise_id, user_id=user_id
-    )
-
-    return Ok(
-        data=[MessageResponseSchema.model_validate(msg) for msg in messages]
-    )
-
-@router.post(
-    "/code/{coding_exercise_id}/conversation:invokeAssistant",
-    response_class=StreamingResponse
-)
-async def ask_coding_assistant_stream(
-    body: InvokeCodingAssistantSchema,
-    coding_exercise_id: UUID = Path(...),
-    token: str = Depends(oauth2_scheme),
-    ctrl: ctrl.ExercisesController = Depends(InternalProvider().get_exercises_controller)
-):
-    payload = verify_token(token)
-    user_id = UUID(payload.get("sub"))
-    # The request body should contain both the user message (content) and their current work (user_solution)
-    generator = ctrl.invoke_coding_assistant(
-        user_id=user_id,
-        coding_exercise_id=coding_exercise_id,
-        content=body.content,
-        user_solution=body.user_solution,
-        language_id=body.language_id
-    )
-    # Stream the response using text/event-stream media type.
-    return StreamingResponse(generator, media_type="text/event-stream")
-
-
-@router.post("/{exercise_id}/language-configs", response_model=Ok[ProgrammingLanguageConfigResponse])
-async def add_language_config(
-    body: ProgrammingLanguageConfigCreateRequest,
-    exercise_id: UUID = Path(...),
-    controller: ProgrammingLanguageConfigController = Depends(InternalProvider().get_pg_config_controller),
-):
-    attributes = {
-        **body.model_dump(), "exercise_id": exercise_id
-    }
-    pg_config = await controller.create(attributes=attributes)
-    return Ok(data=ProgrammingLanguageConfigResponse.model_validate(pg_config))
-
-@router.get("/{exercise_id}/language-configs", response_model=Ok[list[ProgrammingLanguageConfigResponse]])
-async def get_language_configs(
-    exercise_id: UUID,
-    controller: ProgrammingLanguageConfigController = Depends(InternalProvider().get_pg_config_controller)
-):
-    # TODO
-    language_configs = await controller.get_many(
-        where_=[ProgrammingLanguageConfig.exercise_id == exercise_id]
-    )
-    return Ok(data=[ProgrammingLanguageConfigResponse.model_validate(lc) for lc in language_configs])
-
-@router.get("/{exercise_id}/language-configs/{lang_cfg_id}", response_model=Ok[ProgrammingLanguageConfigResponse])
-async def put_lang_cfg(
-    exercise_id: UUID,
-    lang_cfg_id: UUID,
-    body: ProgrammingLanguageConfigCreateRequest,
-    controller: ProgrammingLanguageConfigController = Depends(InternalProvider().get_pg_config_controller)
-):
-    # TODO
-    ...
-
-@router.delete("/{exercise_id}/language-configs/{lang_cfg_id}", response_model=Ok[ProgrammingLanguageConfigResponse])
-async def delete_language_configs(
-    exercise_id: UUID,
-    lang_cfg_id: UUID,
-    controller: ProgrammingLanguageConfigController = Depends(InternalProvider().get_pg_config_controller)
-):
-    # TODO
-    ...
-
-@router.post("/{exercise_id}/testcases", response_model=Ok[ProgrammingTestCaseResponse])
-async def create_testcase(
-    exercise_id: UUID,
-    body: ProgrammingTestCaseCreateRequest,
-    controller: ctrl.ProgrammingTestCaseController = Depends(InternalProvider().get_programming_tc_controller)
-):
-    attributes = body.model_dump()
-    attributes["exercise_id"] = exercise_id
-    testcase = await controller.create(attributes=attributes)
-    return Ok(data=ProgrammingTestCaseResponse.model_validate(testcase))
-
-@router.get("/{exercise_id}/testcases", response_model=Ok[list[ProgrammingTestCaseResponse]])
-async def get_testcases(
-    limit: Optional[int] = Query(10, ge=1),
-    offset: Optional[int] = Query(0, ge=0),
-    exercise_id: UUID = Path(...),
-    controller: ctrl.ProgrammingTestCaseController = Depends(InternalProvider().get_programming_tc_controller)
-):
-    testcases = await controller.get_many(
-        limit=limit, offset=offset, where_=[ProgrammingTestCase.exercise_id == exercise_id, ProgrammingTestCase.is_public == True]
-    )
-    return Ok(data=[ProgrammingTestCaseResponse.model_validate(tc) for tc in testcases])
-
-@router.put("/{exercise_id}/testcases/{testcase_id}", response_model=Ok[ProgrammingTestCaseResponse])
-async def update_testcase(
-    exercise_id: UUID,
-    testcase_id: UUID,
-    body: ProgrammingTestCaseCreateRequest,
-    controller: ctrl.ProgrammingTestCaseController = Depends(InternalProvider().get_programming_tc_controller)
-):
-    attributes = body.model_dump(exclude_unset=True)
-    updated_testcase = await controller.repository.update(
-        where_=[ProgrammingTestCase.id == testcase_id, ProgrammingTestCase.exercise_id == exercise_id],
-        attributes=attributes,
-        commit=True
-    )
-    if not updated_testcase:
-        raise NotFoundException("Programming TestCase not found")
-    return Ok(data=ProgrammingTestCaseResponse.model_validate(updated_testcase))
-
-@router.delete("/{exercise_id}/testcases/{testcase_id}", response_model=Ok[ProgrammingTestCaseResponse])
-async def delete_testcase(
-    testcase_id: UUID = Path(...),
-    exercise_id: UUID = Path(...),
-    controller: ctrl.ProgrammingTestCaseController = Depends(InternalProvider().get_programming_tc_controller)
-):
-    testcase = await controller.repository.first(
-        where_=[ProgrammingTestCase.id == testcase_id, ProgrammingTestCase.exercise_id == exercise_id]
-    )
-    if not testcase:
-        raise NotFoundException("Programming TestCase not found")
-    await controller.repository.delete(where_=[ProgrammingTestCase.id == testcase_id])
-    await controller.repository.session.commit()
-    return Ok(data=ProgrammingTestCaseResponse.model_validate(testcase))
-
-@router.post(
-    "/{exercise_id}/programming-submissions",
-    response_model=Ok[ProgrammingSubmissionCreateResponse],
-    status_code=201
-)
-async def submit_code(
-    exercise_id: UUID,
-    body: ProgrammingSubmissionCreateRequest,
-    token : str = Depends(oauth2_scheme),
-    user_controller: StudentController = Depends(InternalProvider().get_student_controller),
-    exercise_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
-):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    users = await user_controller.get_many(where_=[Student.id == user_id])
-    assert users != []
-    user = users[0]
-
-    submission = await exercise_controller.create_coding_submission(
-        user_id=user.id,
-        exercise_id=exercise_id,
-        user_solution=body.code,
-        judge0_lang_id=body.judge0_language_id
-    )
-
-    return Ok(data=ProgrammingSubmissionCreateResponse.model_validate(submission))
-
-@router.get("/{exercise_id}/coding-submissions/{submission_id}/status", response_model=Ok[ProgrammingSubmissionResponse])
-async def get_coding_submission_status(
-    submission_id: UUID,
-    token : str = Depends(oauth2_scheme),
-    exercise_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller)
-):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    submission = await exercise_controller.submission_repo.first(
-        where_=[ProgrammingSubmission.id == submission_id]
-    )
-    if not submission:
-        raise NotFoundException(message="Submission not found.")
-    return Ok(data=ProgrammingSubmissionResponse.model_validate(submission))
-
-@router.get("/{exercise_id}/coding-submissions", response_model=Ok[list[ProgrammingSubmissionItemSchema]])
-async def get_coding_submissions(
-    exercise_id: UUID = Path(...),
-    token : str = Depends(oauth2_scheme),
-    exercise_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller)
-):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-
-    submission_repo = exercise_controller.submission_repo
-    submissions = await submission_repo.get_many(
-        where_=[ProgrammingSubmission.exercise_id == exercise_id, Student.id == user_id]
-    )
-
-    return Ok(data=[ProgrammingSubmissionItemSchema.model_validate(submission) for submission in submissions])
-
-@router.post("/{exercise_id}/code-solution/{language_id}", response_model=Ok[CodeSolutionResponse])
-async def get_or_generate_code_solution(
-    exercise_id: UUID,
-    language_id: int,
-    exercise_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller)
-):
-    solution_code, explanation = await exercise_controller.get_or_generate_code_solution(
-        exercise_id=exercise_id,
-        language_id=language_id
-    )
-
-    return Ok(data=CodeSolutionResponse(
-        solution=solution_code,
-        explanation=explanation
-    ))
 
 
 @router.delete("/{exercise_id}/ai-generated")

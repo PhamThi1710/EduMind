@@ -1,32 +1,22 @@
-import os
-import jwt
-from jwt import PyJWTError
-from datetime import datetime, timezone, timedelta
 from core.exceptions import UnauthorizedException
 
-SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = os.getenv("ALGORITHM", "HS256")
 
-def verify_token(token: str) -> dict:
+async def verify_token(token: str) -> dict:
+    """
+    Verifies a Supabase JWT using the Supabase Admin API.
+    Returns a dict with 'sub' (UUID string) and 'email'.
+    Raises UnauthorizedException if the token is invalid or expired.
+    """
+    from core.supabase import supabase
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        response = supabase.auth.get_user(token)
+    except Exception as e:
+        raise UnauthorizedException(f"Token verification failed: {e}")
 
-        exp = payload.get("exp")
-        current_time = int(datetime.now(timezone(timedelta(hours=7))).timestamp())
+    if not response or not response.user:
+        raise UnauthorizedException("Invalid or expired token")
 
-        if exp is None:
-            print("Token has no expiration time")
-            raise UnauthorizedException("Token is invalid")
-
-        if current_time > exp:
-            print("Token has expired")
-            raise UnauthorizedException("Token has expired")
-
-        return payload
-
-    except jwt.ExpiredSignatureError:
-        print("Token has expired")
-        raise UnauthorizedException("Token has expired")
-    except PyJWTError as e:  
-        print("Token is invalid")
-        raise UnauthorizedException("Token is invalid", e)
+    return {
+        "sub": str(response.user.id),
+        "email": response.user.email,
+    }

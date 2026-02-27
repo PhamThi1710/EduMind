@@ -1,6 +1,6 @@
 # EduMind API Backend
 
-API for the EduMind project - an intelligent learning platform focusing on personalized learning paths and exercise evaluation. This backend system powers the entire EduMind application.
+API for the EduMind project — an intelligent learning platform focusing on personalized learning paths, AI-powered content generation, and exercise evaluation.
 
 ## Table of Contents
 
@@ -9,61 +9,77 @@ API for the EduMind project - an intelligent learning platform focusing on perso
 - [Prerequisites](#prerequisites)
 - [Getting Started](#getting-started)
   - [1. Clone the Repository](#1-clone-the-repository)
-  - [2. Environment Setup](#2-environment-setup)
-  - [3. Running with Docker Compose](#3-running-with-docker-compose)
+  - [2. Supabase Setup](#2-supabase-setup)
+  - [3. Environment Setup](#3-environment-setup)
+  - [4. Running with Docker Compose](#4-running-with-docker-compose)
 - [Database Migrations](#database-migrations)
+- [Authentication](#authentication)
 - [API Documentation](#api-documentation)
-- [Background Tasks](#background-tasks)
 - [Project Structure](#project-structure)
 - [License](#license)
 
 ## Overview
 
-This repository contains the backend API for the EduMind application. It handles user authentication, data management for courses, lessons, exercises, user progress, integrations with external services like Judge0 for code evaluation, AWS S3 for file storage, and AI models (Google GenAI, OpenAI).
+EduMind is an intelligent learning management system that provides:
+
+- **Personalized Learning Paths** — AI-generated study plans tailored to individual student goals
+- **Course & Lesson Management** — Full CRUD for courses, lessons, and documents
+- **Exercise Evaluation** — Code exercise grading with AI-powered feedback
+- **Progress Tracking** — Detailed analytics for students and professors
+- **AI Assistants** — Conversational AI for learning support and quiz generation
 
 ## Tech Stack
 
-* **Language:** Python 3.11+
-* **Framework:** FastAPI
-* **Database:** PostgreSQL
-* **Caching/Message Broker:** Redis (for Dramatiq and application caching)
-* **Async:** Uvicorn (ASGI server), AsyncPG (Postgres driver)
-* **ORM:** SQLAlchemy
-* **Migrations:** Alembic
-* **Dependency Management:** Poetry
-* **Containerization:** Docker, Docker Compose
-* **Background Tasks:** Dramatiq
-* **Key Libraries:**
-  * Pydantic (Data validation & settings management)
-  * JWT (for token-based authentication)
-  * fastapi-mail (Email sending)
-  * Boto3 (AWS S3 integration)
-  * google-generativeai, openai (AI model SDKs)
+| Layer | Technology |
+|-------|-----------|
+| **Language** | Python 3.11+ |
+| **Framework** | FastAPI |
+| **Database** | PostgreSQL (hosted on [Supabase](https://supabase.com)) |
+| **Auth** | Supabase Auth (JWT-based) |
+| **Storage** | Supabase Storage + AWS S3 |
+| **ORM** | SQLAlchemy 2.x (async) |
+| **DB Driver** | asyncpg |
+| **Migrations** | Alembic |
+| **Caching** | Redis |
+| **AI / LLM** | Google Gemini, OpenAI, LangChain, LangGraph |
+| **Containerization** | Docker, Docker Compose |
+| **Dependency Mgmt** | Poetry |
+| **ASGI Server** | Uvicorn |
 
 ## Prerequisites
 
-* **Git:** For cloning the repository
-* **Docker & Docker Compose:** Essential for running the application and its services
-  * [Download Docker](https://docs.docker.com/get-docker/)
-* **Poetry (Optional):** Only if you intend to manage dependencies or run the project locally without Docker
-  * [Install Poetry](https://python-poetry.org/docs/#installation)
-* **Python:** Install the latest version of Python
-  * [Install Python](https://www.python.org/downloads/)
+- **Docker & Docker Compose** — [Install Docker](https://docs.docker.com/get-docker/)
+- **Git** — For cloning the repository
+- **Supabase Account** — [Sign up at supabase.com](https://supabase.com) (free tier works)
+- **Poetry** *(optional)* — Only needed for local development without Docker
 
 ## Getting Started
 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/PhamThi1710/EduMind.git 
+git clone https://github.com/PhamThi1710/EduMind.git
 cd EduMind
 ```
 
-### 2. Environment Setup
+### 2. Supabase Setup
 
-Create a `.env` file in the project root directory. You can copy from `env.example` (if it exists) or create a new file with the following template:
+1. Create a new project on the [Supabase Dashboard](https://supabase.com/dashboard)
+2. Note your **Project URL** and **API keys** from **Settings → API**
+3. Get your **database connection string** from **Connect** (top-right green button):
+   - Select **Method: Session pooler** (required for IPv4 networks / Docker)
+   - Copy the **URI** — it will look like:
+     ```
+     postgresql://postgres.[PROJECT-REF]:[PASSWORD]@aws-X-[REGION].pooler.supabase.com:5432/postgres
+     ```
 
-```
+> **Important:** The direct database connection (`db.[ref].supabase.co`) is IPv6-only. Docker containers require IPv4, so you **must** use the Session Pooler connection string.
+
+### 3. Environment Setup
+
+Create a `.env` file in the project root:
+
+```bash
 # Core Settings
 ENV=development
 DEBUG=True
@@ -71,28 +87,30 @@ APP_HOST=localhost
 APP_PORT=8080
 LOG_LEVEL=DEBUG
 
-# Database Settings
+# Database Settings (Supabase Session Pooler)
 POSTGRES_USER=postgres
-POSTGRES_PASSWORD=your_strong_password
-POSTGRES_DB=codemate
-SQLALCHEMY_POSTGRES_URI=postgresql+asyncpg://postgres:your_strong_password@127.0.0.1:5433/codemate
+POSTGRES_PASSWORD=your_supabase_db_password
+POSTGRES_DB=postgres
+SQLALCHEMY_POSTGRES_URI=postgresql+asyncpg://postgres.[PROJECT-REF]:[PASSWORD]@aws-X-[REGION].pooler.supabase.com:5432/postgres
 SQLALCHEMY_ECHO=False
 
 # Redis Settings
 REDIS_URL=redis://127.0.0.1:6379/0
 
-# JUDGE0 API (Code Execution)
-RAPIDAPI_KEY=your_actual_rapidapi_key_for_judge0
+# Supabase Settings
+SUPABASE_URL=https://[PROJECT-REF].supabase.co
+SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 
 # AWS S3 Settings
 AWS3_ACCESS_KEY_ID=your_aws_access_key_id
 AWS3_SECRET_ACCESS_KEY=your_aws_secret_access_key
 AWS3_REGION=ap-southeast-2
-AWS3_BUCKET_NAME=specialized-project
+AWS3_BUCKET_NAME=your_bucket_name
 
 # AI Model Settings
 GOOGLE_GENAI_API_KEY=your_google_genai_api_key
-GEMINI_API_KEY=your_google_genai_api_key
+GEMINI_API_KEY=your_gemini_api_key
 OPENAI_API_KEY=your_openai_api_key
 
 # Email Settings
@@ -105,32 +123,21 @@ MAIL_STARTTLS=True
 MAIL_SSL_TLS=False
 USE_CREDENTIALS=True
 
-# JWT Settings
-SECRET_KEY=your_strong_random_jwt_secret_key
-REFRESH_SECRET_KEY=your_strong_random_jwt_refresh_secret_key
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-REFRESH_TOKEN_EXPIRE_DAYS=7
-
-# Additional Settings (if needed)
+# Additional Settings
 EXCEL_FILE_PATH=data/emails.xlsx
 CLIENT_AUTH=your_google_client_id
 GOOGLE_API_URL=https://www.googleapis.com/auth/drive.file
 ```
 
-> **Security Note:** The `.env` file contains sensitive credentials. Ensure it is listed in your `.gitignore` file to prevent committing it to your repository. Generate strong, unique values for passwords and secret keys.
+> **Security Note:** The `.env` file contains sensitive credentials. Ensure it is listed in `.gitignore` and never committed to the repository.
 
-### 3. Running with Docker Compose
+### 4. Running with Docker Compose
 
-This is the recommended method as it bundles the application, PostgreSQL database, and Redis cache into manageable services.
-
-**Build and Start Services:**
+**Build and start services:**
 
 ```bash
 docker compose up --build
 ```
-
-The first run will download base images and build your application image. This may take several minutes.
 
 To run in detached (background) mode:
 
@@ -138,115 +145,134 @@ To run in detached (background) mode:
 docker compose up --build -d
 ```
 
-**Apply Database Migrations:**
-
-Once the database container is running, apply migrations in a separate terminal: **!! Crucial !!: You must run this cml right after running docker to create database and relations** 
+**Apply database migrations** (run this after the containers are up):
 
 ```bash
 docker compose exec web poetry run alembic upgrade head
 ```
 
-This creates all necessary database tables.
+This creates all necessary database tables in your Supabase database.
 
-**Accessing the Application:**
+**Accessing the application:**
 
-- API: http://localhost:8080 (adjust if APP_PORT is different)
-- API Documentation (Swagger UI): http://localhost:8080/api/docs
-- Alternative API Documentation (ReDoc): http://localhost:8080/api/redoc
+| Resource | URL |
+|----------|-----|
+| API | `http://localhost:8080` |
+| Swagger UI | `http://localhost:8080/api/docs` |
+| ReDoc | `http://localhost:8080/api/redoc` |
 
-**Viewing Logs (when running in detached mode):**
+**Viewing logs** (when running in detached mode):
 
 ```bash
 docker compose logs -f          # All services
 docker compose logs -f web      # FastAPI service only
-docker compose logs -f worker   # Dramatiq worker only
-docker compose logs -f db       # PostgreSQL service only
 ```
 
-**Stopping the Services:**
-
-If running in terminal, press `Ctrl+C`
-
-If running in detached mode:
+**Stopping the services:**
 
 ```bash
-docker compose down
-```
-
-To stop services AND remove data volumes (deletes all database and Redis data):
-
-```bash
-docker compose down -v
+docker compose down             # Stop services
+docker compose down -v          # Stop + remove Redis data
 ```
 
 ## Database Migrations
 
-This project uses Alembic for managing database schema changes.
+This project uses [Alembic](https://alembic.sqlalchemy.org/) for managing database schema changes.
 
-**Apply All Pending Migrations:**
+| Action | Command |
+|--------|---------|
+| Apply all pending migrations | `docker compose exec web poetry run alembic upgrade head` |
+| Create a new migration | `docker compose exec web poetry run alembic revision -m "description"` |
+| Auto-generate migration from models | `docker compose exec web poetry run alembic revision --autogenerate -m "description"` |
+| View migration history | `docker compose exec web poetry run alembic history` |
+| Downgrade one version | `docker compose exec web poetry run alembic downgrade -1` |
 
-```bash
-docker compose exec web poetry run alembic upgrade head
+## Authentication
+
+EduMind uses **Supabase Auth** for all authentication. The backend does not manage passwords — all sign-up/sign-in happens through Supabase.
+
+### Flow
+
+```
+Frontend ──► Supabase Auth (email + password) ──► JWT access_token
+Frontend ──► Backend API (Authorization: Bearer <token>) ──► Response
 ```
 
-**Create a New Migration:**
+### Creating Your First Admin User
 
-```bash
-docker compose exec web poetry run alembic revision -m "your_descriptive_migration_message"
-```
+1. **Create a user in Supabase:** Dashboard → Authentication → Users → Add User
 
-**View Migration History:**
+2. **Get a JWT token:**
+   ```bash
+   curl -X POST 'https://[PROJECT-REF].supabase.co/auth/v1/token?grant_type=password' \
+     -H "apikey: YOUR_SUPABASE_ANON_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"email": "your@email.com", "password": "your-password"}'
+   ```
 
-```bash
-docker compose exec web poetry run alembic history
-```
+3. **Call the API** to auto-provision the user row:
+   ```bash
+   curl http://localhost:8080/api/auth/me \
+     -H "Authorization: Bearer ACCESS_TOKEN_FROM_STEP_2"
+   ```
+
+4. **Promote to admin** via Supabase SQL Editor:
+   ```sql
+   UPDATE public.users SET role = 'admin' WHERE email = 'your@email.com';
+   ```
 
 ## API Documentation
 
-Once the application is running, access the interactive API documentation:
+Once the application is running, open **Swagger UI** at `http://localhost:8080/api/docs`.
 
-- Swagger UI: http://localhost:8080/api/docs
+**To authorize:**
 
-**Authorizing in Swagger UI:**
+1. Click the **"Authorize"** button (🔒) at the top
+2. Paste your Supabase JWT `access_token` in the **Value** field
+3. Click **Authorize** → **Close**
 
-1. Execute the POST `/api/v1/auth/login` endpoint with your credentials
-2. Copy the `access_token` from the response
-3. Click the "Authorize" button at the top-right
-4. In the "ApiKeyAuth" section, paste the token prefixed with `Bearer ` (note the space)
-5. Click "Authorize" and close the dialog
-
-## Background Tasks
-
-Background tasks are handled by Dramatiq workers, which are automatically started with Docker Compose.
-
-Task definitions are primarily located in the `tasks/` directory.
+All subsequent API calls will include the token automatically.
 
 ## Project Structure
 
 ```
 EduMind/
-├── alembic/                # Alembic migration scripts
-├── core/                   # Core components (database, cache, settings)
-├── machine/                # Main FastAPI application module
-│   ├── api/                # API route definitions
-│   ├── controllers/        # Business logic layer
-│   ├── models/             # SQLAlchemy ORM models
-│   ├── schemas/            # Pydantic schemas
-│   └── server.py           # FastAPI application configuration
-├── migrations/             # Alembic-generated versions
-├── tasks/                  # Dramatiq background tasks
-├── templates/              # Email templates
-├── .env                    # Environment variables (not committed)
-├── .env.example            # Example template for .env file
-├── alembic.ini             # Alembic configuration
-├── Dockerfile              # Docker image definition
-├── docker-compose.yml      # Docker service orchestration
-├── main.py                 # Application entry point
-├── poetry.lock             # Poetry lock file
-├── pyproject.toml          # Project definition and dependencies
-└── README.md               # This file
+├── core/                       # Core framework components
+│   ├── db/                     #   Database session management
+│   ├── cache/                  #   Redis cache layer
+│   ├── fastapi/middlewares/    #   SQLAlchemy middleware
+│   ├── settings.py             #   Configuration (loaded from .env)
+│   ├── supabase.py             #   Supabase client initialization
+│   └── utils/                  #   Auth utilities, file helpers
+├── machine/                    # Main application module
+│   ├── api/v1/                 #   API route definitions
+│   │   ├── auth.py             #     Auth endpoints (GET /auth/me)
+│   │   ├── user.py             #     User management (admin)
+│   │   ├── courses.py          #     Course CRUD
+│   │   ├── lesson.py           #     Lesson management
+│   │   ├── exercise.py         #     Exercise evaluation
+│   │   ├── ai_routers.py       #     AI/LLM endpoints
+│   │   ├── feedback.py         #     Student feedback
+│   │   └── ...                 #     Other domain routes
+│   ├── controllers/            #   Business logic layer
+│   ├── models/                 #   SQLAlchemy ORM models
+│   ├── schemas/                #   Pydantic request/response schemas
+│   ├── repositories/           #   Data access layer
+│   ├── providers/              #   Dependency injection
+│   ├── services/               #   External service integrations
+│   └── server.py               #   FastAPI app factory
+├── migrations/                 # Alembic migration versions
+├── utils/                      # Shared utilities
+├── templates/                  # Email templates
+├── tests/                      # Test suite
+├── .env                        # Environment variables (not committed)
+├── alembic.ini                 # Alembic configuration
+├── Dockerfile                  # Docker image definition
+├── docker-compose.yml          # Docker service orchestration
+├── main.py                     # Application entry point
+├── pyproject.toml              # Project dependencies (Poetry)
+└── README.md                   # This file
 ```
 
 ## License
-
-Group 6 - HCMUT - HK242
+Jenny - Thi Pham

@@ -1,48 +1,29 @@
-
 from typing import List
-from core.response import Ok
-from machine.models import *
 from datetime import datetime
-from machine.controllers import *
-from pydantic import ValidationError
-from machine.schemas.requests import *
-from machine.controllers import *
-from machine.providers import InternalProvider
-from machine.schemas.responses.dashboard import *
-from fastapi.security import OAuth2PasswordBearer
+
 from fastapi import APIRouter, Depends, HTTPException
-from core.exceptions import NotFoundException, BadRequestException, ForbiddenException
-from core.utils.auth_utils import verify_token
-from datetime import datetime
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+from pydantic import ValidationError
+
+from core.exceptions import NotFoundException, BadRequestException
+from core.response import Ok
+from core.utils.get_current_user import get_current_user
+from machine.controllers import ActivitiesController, CoursesController, LessonsController, StudentCoursesController, ExercisesController
+from machine.models import Activities, Courses, Exercises, Lessons, StudentCourses, Users
+from machine.providers import InternalProvider
+from machine.schemas.requests import *
+from machine.schemas.responses.dashboard import *
+
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
-from datetime import datetime
-
 @router.get("/student-recent-course", response_model=Ok[WelcomeMessageResponse])
 async def get_recent_course(
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     studentcourses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
 ):
-    """
-    Get the most recently accessed course by the student.
-    """
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-
-    student = await student_controller.student_repository.first(
-        where_=[Student.id == user_id],
-    )
-
-    if not student:
-        raise NotFoundException(message="You are not a student. Please log in as a student to access this feature.")
-
+    """Get the most recently accessed course by the current user."""
     recent_course = await studentcourses_controller.student_courses_repository.first(
-        where_=[StudentCourses.student_id == user_id],
+        where_=[StudentCourses.user_id == current_user.id],
         order_={"desc": [{"field": "last_accessed", "model_class": StudentCourses}]},
         relations=[StudentCourses.course],
     )
@@ -50,57 +31,32 @@ async def get_recent_course(
     if not recent_course:
         return Ok(data=None, message="No recent course found.")
 
-    # Handle last_accessed field
     last_accessed = recent_course.last_accessed
     if last_accessed is None:
-        last_accessed = datetime.now()  # or set to another default value if needed
+        last_accessed = datetime.now()
     elif isinstance(last_accessed, str):
-        # If it's a string, attempt to convert it to a datetime object
         try:
             last_accessed = datetime.fromisoformat(last_accessed)
         except ValueError:
-            last_accessed = datetime.now()  # fallback to a default value if conversion fails
+            last_accessed = datetime.now()
 
     data = WelcomeMessageResponse(
-        course=recent_course.course.name, 
-        course_id=recent_course.course.id, 
-        last_accessed=last_accessed.isoformat()  # Ensure it's a valid ISO string or datetime
+        course=recent_course.course.name,
+        course_id=recent_course.course.id,
+        last_accessed=last_accessed.isoformat()
     )
     return Ok(data=data, message="Successfully fetched the recent course.")
 
 
-
 @router.get("/student-activities", response_model=Ok[List[GetRecentActivitiesResponse]])
 async def get_activities(
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     activities_controller: ActivitiesController = Depends(InternalProvider().get_activities_controller),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
 ):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-
-    student = await student_controller.student_repository.first(
-        where_=[Student.id == user_id],
-    )
-
-    if not student:
-        raise NotFoundException(message="You are not a student. Please log in as a student to access this feature.")
-
     recent_activities = await activities_controller.activities_repository.get_many(
-        where_=[Activities.student_id == user_id],
+        where_=[Activities.user_id == current_user.id],
         order_={"desc": [{"field": "timestamp", "model_class": Activities}]},
     )
-
-    # if not recent_activities:
-    #     student_exists = await activities_controller.activities_repository.get_many(
-    #         where_=[Activities.student_id == user_id]
-    #     )
-    #     if not student_exists:
-    #         raise NotFoundException(message="Student ID not found in the database.")
-
-    #     raise NotFoundException(message="No activities found for the given student ID.")
 
     activities_data = [
         GetRecentActivitiesResponse(
@@ -111,35 +67,22 @@ async def get_activities(
         )
         for activity in recent_activities
     ]
-
     return Ok(data=activities_data, message="Successfully fetched the recent activities.")
 
-@router.post("/student-activities", response_model=Ok[bool]) # add logic recommend lesson 
+
+@router.post("/student-activities", response_model=Ok[bool])
 async def add_activity(
     request: AddActivityRequest,
-    token: str = Depends(oauth2_scheme),
+    current_user: Users = Depends(get_current_user),
     activities_controller: ActivitiesController = Depends(InternalProvider().get_activities_controller),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
 ):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-
-    student = await student_controller.student_repository.first(
-        where_=[Student.id == user_id],
-    )
-
-    if not student:
-        raise NotFoundException(message="You are not a student. Please log in as a student to access this feature.")
-
     try:
         if not request.type or not request.description:
-            raise BadRequestException(message="Student ID, activity type, and activity description are required.")
+            raise BadRequestException(message="Activity type and description are required.")
 
         activity = await activities_controller.activities_repository.create(
             attributes={
-                "student_id": user_id,
+                "user_id": current_user.id,
                 "type": request.type,
                 "description": request.description,
                 "timestamp": datetime.now(),
@@ -154,27 +97,17 @@ async def add_activity(
     except ValidationError as e:
         raise HTTPException(status_code=500, detail=f"Validation error: {e.errors()}")
 
+
 @router.get("/professors", response_model=Ok[GetDashboardProfessorResponse])
 async def get_professor_dashboard(
-    token: str = Depends(oauth2_scheme), 
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
+    current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
     lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
 ):
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-
-    professor = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-
-    if not professor:
-        raise NotFoundException(message="Only professors have the permission to get professor dashboard.")
-    
-    n_courses = await courses_controller.courses_repository.count(where_=[Courses.professor_id == professor.id])
-    courses = await courses_controller.courses_repository.get_many(where_=[Courses.professor_id == professor.id])
+    n_courses = await courses_controller.courses_repository.count(where_=[Courses.owner_id == current_user.id])
+    courses = await courses_controller.courses_repository.get_many(where_=[Courses.owner_id == current_user.id])
 
     n_lessons = 0
     n_students_set = set()
@@ -186,15 +119,14 @@ async def get_professor_dashboard(
         student_courses = await student_courses_controller.student_courses_repository.get_many(
             where_=[StudentCourses.course_id == course.id]
         )
-        student_ids = [sc.student_id for sc in student_courses]  # Chỉ lấy ID sinh viên
-        n_students_set.update(student_ids)  # Thêm vào set để loại bỏ trùng lặp
-        
+        user_ids = [sc.user_id for sc in student_courses]
+        n_students_set.update(user_ids)
+
         exercises_count = await exercises_controller.exercises_repository.count(where_=[Exercises.course_id == course.id])
         n_exercises += exercises_count
 
-    upcoming_exercises_list = []
     current_time = datetime.utcnow()
-
+    upcoming_exercises_list = []
     for course in courses:
         upcoming_exercises = await exercises_controller.exercises_repository.get_many(
             where_=[
@@ -212,22 +144,21 @@ async def get_professor_dashboard(
             exercise_time_open=exercise.time_open.strftime("%H:%M %d/%m/%Y"),
             exercise_time_close=exercise.time_close.strftime("%H:%M %d/%m/%Y"),
             exercise_type=exercise.type,
-            course_name = course.name,
-            course_id = course.id,
-            course_courseID = course.courseID,
-            course_nSemester = course.nSemester
+            course_name=course.name,
+            course_id=course.id,
+            course_courseID=course.courseID,
+            course_nSemester=course.nSemester
         )
         for exercise in upcoming_exercises_list
     ]
 
     response = GetDashboardProfessorResponse(
-        professor_id=professor.id,
-        professor_name=professor.name,
+        professor_id=current_user.id,
+        professor_name=current_user.full_name or current_user.email,
         nCourses=n_courses,
         nLessons=n_lessons,
         nStudents=len(n_students_set),
         nExercises=n_exercises,
         upcoming_events=upcoming_events
     )
-
     return Ok(data=response, message="Successfully fetched professor dashboard.")

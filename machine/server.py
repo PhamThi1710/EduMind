@@ -172,7 +172,7 @@ def create_machine() -> FastAPI:
     app_.settings = settings
     init_routers(app_)
     init_listeners(app_=app_)
-    init_cache()
+    # init_cache()
     # init_sentry()
     return app_
 

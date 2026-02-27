@@ -1,7 +1,7 @@
 from typing import Optional
 from uuid import UUID
 from core.controller.base import BaseController
-from machine.models.coding_assistant import Conversation
+from machine.models.conversation import Conversation
 
 
 class ConversationController(BaseController[Conversation]):

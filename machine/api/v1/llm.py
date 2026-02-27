@@ -6,37 +6,23 @@ from machine.controllers import *
 from machine.providers import InternalProvider
 from machine.schemas.requests.llm_code import *
 from machine.schemas.responses.llm_code import *
-from core.utils.auth_utils import verify_token
-from fastapi.security import OAuth2PasswordBearer
+from core.utils.get_current_user import get_current_user
 from core.exceptions import NotFoundException, BadRequestException
 from machine.services.workflows.ai_tool_provider import AIToolProvider, LLMModelName
+from machine.models import Users
 import json
 import re
 import logging
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 router = APIRouter(prefix="/llm", tags=["llm"])
 @router.post("/explain_code", response_model=Ok[List[CodeExplanation]])
 async def explain_code(
     analysis_request: CodeAnalysisRequest,
-    token: str = Depends(oauth2_scheme),
-    student_controller: StudentController = Depends(InternalProvider().get_student_controller),
-    professor_controller: ProfessorController = Depends(InternalProvider().get_professor_controller),
+    current_user: Users = Depends(get_current_user),
 ):
     """
     API endpoint to analyze code and return results as an array with line, code and explanation.
     """
-    # User authentication
-    payload = verify_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise BadRequestException(message="Your account is not authorized. Please log in again.")
-    
-    user = await student_controller.student_repository.first(where_=[Student.id == user_id])
-    if not user:
-        user = await professor_controller.professor_repository.first(where_=[Professor.id == user_id])
-        if not user:
-            raise NotFoundException(message="You don't have permission to use this feature.")
     
     try:
         # Fixed temperature and max_tokens
