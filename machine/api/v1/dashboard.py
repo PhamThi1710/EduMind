@@ -1,164 +1,107 @@
 from typing import List
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import ValidationError
-
-from core.exceptions import NotFoundException, BadRequestException
+from fastapi import APIRouter, Depends
 from core.response import Ok
 from core.utils.get_current_user import get_current_user
-from machine.controllers import ActivitiesController, CoursesController, LessonsController, StudentCoursesController, ExercisesController
-from machine.models import Activities, Courses, Exercises, Lessons, StudentCourses, Users
+from machine.controllers import CoursesController, ExercisesController
+from machine.models import Courses, Exercises, Users
 from machine.providers import InternalProvider
-from machine.schemas.requests import *
 from machine.schemas.responses.dashboard import *
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
-@router.get("/student-recent-course", response_model=Ok[WelcomeMessageResponse])
+@router.get("/recent-course", response_model=Ok[WelcomeMessageResponse])
 async def get_recent_course(
     current_user: Users = Depends(get_current_user),
-    studentcourses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
+    courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
 ):
-    """Get the most recently accessed course by the current user."""
-    recent_course = await studentcourses_controller.student_courses_repository.first(
-        where_=[StudentCourses.user_id == current_user.id],
-        order_={"desc": [{"field": "last_accessed", "model_class": StudentCourses}]},
-        relations=[StudentCourses.course],
+    """Get the most recently updated course where the user is owner or member."""
+    # Try owned courses first
+    recent = await courses_controller.courses_repository.first(
+        where_=[Courses.owner_id == current_user.id],
+        order_={"desc": [{"field": "updated_at", "model_class": Courses}]},
     )
+    if not recent:
+        # Try member courses
+        courses = await courses_controller.courses_repository.get_many(
+            where_=[Courses.members.any(str(current_user.id))],
+            order_={"desc": [{"field": "updated_at", "model_class": Courses}]},
+            limit=1,
+        )
+        recent = courses[0] if courses else None
 
-    if not recent_course:
+    if not recent:
         return Ok(data=None, message="No recent course found.")
 
-    last_accessed = recent_course.last_accessed
-    if last_accessed is None:
-        last_accessed = datetime.now()
-    elif isinstance(last_accessed, str):
-        try:
-            last_accessed = datetime.fromisoformat(last_accessed)
-        except ValueError:
-            last_accessed = datetime.now()
-
-    data = WelcomeMessageResponse(
-        course=recent_course.course.name,
-        course_id=recent_course.course.id,
-        last_accessed=last_accessed.isoformat()
-    )
-    return Ok(data=data, message="Successfully fetched the recent course.")
-
-
-@router.get("/student-activities", response_model=Ok[List[GetRecentActivitiesResponse]])
-async def get_activities(
-    current_user: Users = Depends(get_current_user),
-    activities_controller: ActivitiesController = Depends(InternalProvider().get_activities_controller),
-):
-    recent_activities = await activities_controller.activities_repository.get_many(
-        where_=[Activities.user_id == current_user.id],
-        order_={"desc": [{"field": "timestamp", "model_class": Activities}]},
+    return Ok(
+        data=WelcomeMessageResponse(course=recent.name, course_id=recent.id),
+        message="Successfully fetched the recent course.",
     )
 
-    activities_data = [
-        GetRecentActivitiesResponse(
-            activity_id=activity.id,
-            activity_description=activity.description,
-            activity_type=str(activity.type),
-            activity_date=activity.timestamp,
-        )
-        for activity in recent_activities
-    ]
-    return Ok(data=activities_data, message="Successfully fetched the recent activities.")
 
-
-@router.post("/student-activities", response_model=Ok[bool])
-async def add_activity(
-    request: AddActivityRequest,
-    current_user: Users = Depends(get_current_user),
-    activities_controller: ActivitiesController = Depends(InternalProvider().get_activities_controller),
-):
-    try:
-        if not request.type or not request.description:
-            raise BadRequestException(message="Activity type and description are required.")
-
-        activity = await activities_controller.activities_repository.create(
-            attributes={
-                "user_id": current_user.id,
-                "type": request.type,
-                "description": request.description,
-                "timestamp": datetime.now(),
-            },
-            commit=True,
-        )
-
-        if not activity:
-            raise NotFoundException(message="Failed to add activity.")
-
-        return Ok(data=True, message="Successfully added the activity.")
-    except ValidationError as e:
-        raise HTTPException(status_code=500, detail=f"Validation error: {e.errors()}")
-
-
-@router.get("/professors", response_model=Ok[GetDashboardProfessorResponse])
-async def get_professor_dashboard(
+@router.get("/overview", response_model=Ok[GetDashboardResponse])
+async def get_dashboard_overview(
     current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
 ):
-    n_courses = await courses_controller.courses_repository.count(where_=[Courses.owner_id == current_user.id])
-    courses = await courses_controller.courses_repository.get_many(where_=[Courses.owner_id == current_user.id])
+    """Dashboard overview for the current user."""
+    owned = await courses_controller.courses_repository.get_many(
+        where_=[Courses.owner_id == current_user.id]
+    )
+    member = await courses_controller.courses_repository.get_many(
+        where_=[Courses.members.any(str(current_user.id))]
+    )
+    seen_ids = set()
+    all_courses = []
+    for c in owned + member:
+        if c.id not in seen_ids:
+            seen_ids.add(c.id)
+            all_courses.append(c)
 
-    n_lessons = 0
-    n_students_set = set()
+    n_courses = len(all_courses)
     n_exercises = 0
-    for course in courses:
-        lessons_count = await lessons_controller.lessons_repository.count(where_=[Lessons.course_id == course.id])
-        n_lessons += lessons_count
-
-        student_courses = await student_courses_controller.student_courses_repository.get_many(
-            where_=[StudentCourses.course_id == course.id]
-        )
-        user_ids = [sc.user_id for sc in student_courses]
-        n_students_set.update(user_ids)
-
-        exercises_count = await exercises_controller.exercises_repository.count(where_=[Exercises.course_id == course.id])
-        n_exercises += exercises_count
-
-    current_time = datetime.utcnow()
     upcoming_exercises_list = []
-    for course in courses:
-        upcoming_exercises = await exercises_controller.exercises_repository.get_many(
-            where_=[
-                Exercises.course_id == course.id,
-                Exercises.time_close > current_time
-            ],
-        )
-        upcoming_exercises_list.extend(upcoming_exercises)
+    current_time = datetime.utcnow()
 
-    upcoming_exercises_list = sorted(upcoming_exercises_list, key=lambda ex: ex.time_close)[:4]
+    for course in all_courses:
+        ex_count = await exercises_controller.exercises_repository.count(
+            where_=[Exercises.course_id == course.id]
+        )
+        n_exercises += ex_count
+
+        upcoming = await exercises_controller.exercises_repository.get_many(
+            where_=[Exercises.course_id == course.id, Exercises.time_close > current_time],
+        )
+        for ex in upcoming:
+            upcoming_exercises_list.append((ex, course))
+
+    upcoming_exercises_list.sort(key=lambda x: x[0].time_close)
+    upcoming_exercises_list = upcoming_exercises_list[:4]
+
     upcoming_events = [
         Events(
-            exercise_id=exercise.id,
-            exercise_name=exercise.name,
-            exercise_time_open=exercise.time_open.strftime("%H:%M %d/%m/%Y"),
-            exercise_time_close=exercise.time_close.strftime("%H:%M %d/%m/%Y"),
-            exercise_type=exercise.type,
+            exercise_id=ex.id,
+            exercise_name=ex.name,
+            exercise_time_open=ex.time_open.strftime("%H:%M %d/%m/%Y") if ex.time_open else "",
+            exercise_time_close=ex.time_close.strftime("%H:%M %d/%m/%Y") if ex.time_close else "",
+            exercise_type=ex.type,
             course_name=course.name,
             course_id=course.id,
-            course_courseID=course.courseID,
-            course_nSemester=course.nSemester
+
         )
-        for exercise in upcoming_exercises_list
+        for ex, course in upcoming_exercises_list
     ]
 
-    response = GetDashboardProfessorResponse(
-        professor_id=current_user.id,
-        professor_name=current_user.full_name or current_user.email,
-        nCourses=n_courses,
-        nLessons=n_lessons,
-        nStudents=len(n_students_set),
-        nExercises=n_exercises,
-        upcoming_events=upcoming_events
+    return Ok(
+        data=GetDashboardResponse(
+            user_id=current_user.id,
+            user_name=current_user.full_name or current_user.email,
+            nCourses=n_courses,
+            nExercises=n_exercises,
+            upcoming_events=upcoming_events,
+        ),
+        message="Successfully fetched dashboard.",
     )
-    return Ok(data=response, message="Successfully fetched professor dashboard.")

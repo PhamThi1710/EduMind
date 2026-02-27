@@ -62,7 +62,6 @@ class Exercises(Base):
     penalty_per_attempt = Column(Float, default=0.0)  # Penalty for each incorrect attempt
     pass_mark = Column(Float, nullable=True)  # Minimum score to pass
     course = relationship("Courses", back_populates="exercises")
-    student_exercises = relationship("StudentExercises", back_populates="exercise")
 
     # For coding exercises, there is a coding assistant. This foreign key points to the conversation
     # between user and the assistant.

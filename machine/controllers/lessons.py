@@ -1,12 +1,7 @@
 from core.controller import BaseController
-from machine.models import Lessons, Documents, ExtractedText
-from machine.repositories import LessonsRepository, DocumentsRepository, ExtractedTextRepository
+from machine.models import Documents, ExtractedText
+from machine.repositories import DocumentsRepository, ExtractedTextRepository
 
-
-class LessonsController(BaseController[Lessons]):
-    def __init__(self, lessons_repository: LessonsRepository):
-        super().__init__(model_class=Lessons, repository=lessons_repository)
-        self.lessons_repository = lessons_repository
         
 class DocumentsController(BaseController[Documents]):
     def __init__(self, documents_repository: DocumentsRepository):

@@ -4,8 +4,8 @@ from core.response import Ok
 from machine.schemas.requests.exercise import  *
 from machine.schemas.responses.exercise import  *
 from machine.providers import InternalProvider
-from machine.controllers import *
-from machine.models import *
+from machine.controllers import CoursesController, ExercisesController
+from machine.models import Courses, Exercises, Users
 from core.exceptions import NotFoundException, BadRequestException
 from uuid import UUID
 from fastapi import  Depends
@@ -312,14 +312,13 @@ async def delete_exercise(
     current_user: Users = Depends(get_current_user),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
     course_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    student_exercise_controller: StudentExercisesController = Depends(InternalProvider().get_studentexercises_controller),
 ):
     """
     Deletes an existing exercise by ID.
     """
     exercise = await exercises_controller.exercises_repository.first(
         where_=[Exercises.id == exercise_id],
-        relations=[Exercises.course, Exercises.student_exercises],
+        relations=[Exercises.course],
     )
     if not exercise:
         raise NotFoundException(message="Exercise not found for the given ID.")
@@ -327,17 +326,11 @@ async def delete_exercise(
         raise NotFoundException(message="Exercise not associated with any course.")
     
     if not exercise.course.owner_id == current_user.id:
-        raise BadRequestException(message="You are not allowed to delete exercise for this lesson.")
+        raise BadRequestException(message="You are not allowed to delete this exercise.")
     # Delete the exercise
     await exercises_controller.exercises_repository.delete(
         where_=[Exercises.id == exercise_id],
     )
-    if exercise.student_exercises:
-        for student_exercise in exercise.student_exercises:
-            await student_exercise_controller.student_exercises_repository.delete(
-                where_=[StudentExercises.id == student_exercise.id]
-            )
-            
     await exercises_controller.exercises_repository.session.commit()
     # Return success response
     return Ok(
@@ -706,14 +699,13 @@ async def delete_code_exercise(
     current_user: Users = Depends(get_current_user),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
     course_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    student_exercise_controller: StudentExercisesController = Depends(InternalProvider().get_studentexercises_controller),
 ):
     """
     Deletes an existing code exercise by ID.
     """
     exercise = await exercises_controller.exercises_repository.first(
         where_=[Exercises.id == exercise_id],
-        relations=[Exercises.course, Exercises.student_exercises],
+        relations=[Exercises.course],
     )
     if not exercise:
         raise NotFoundException(message="Exercise not found for the given ID.")
@@ -726,13 +718,6 @@ async def delete_code_exercise(
     
     if not exercise.course.owner_id == current_user.id:
         raise BadRequestException(message="You are not allowed to delete exercise for this course.")
-    
-    # Delete student exercises first
-    if exercise.student_exercises:
-        for student_exercise in exercise.student_exercises:
-            await student_exercise_controller.student_exercises_repository.delete(
-                where_=[StudentExercises.id == student_exercise.id]
-            )
     
     # Delete the exercise
     await exercises_controller.exercises_repository.delete(

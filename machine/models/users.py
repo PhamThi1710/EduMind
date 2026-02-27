@@ -26,8 +26,5 @@ class Users(Base, TimestampMixin):
 
     # Relationships
     courses = relationship("Courses", back_populates="owner", foreign_keys="Courses.owner_id")
-    student_courses = relationship("StudentCourses", back_populates="user")
-    activities = relationship("Activities", back_populates="user")
-    student_exercises = relationship("StudentExercises", back_populates="user")
     learning_paths = relationship("LearningPaths", back_populates="user")
     feedbacks = relationship("Feedback", back_populates="user")

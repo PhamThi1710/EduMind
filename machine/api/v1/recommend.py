@@ -7,8 +7,8 @@ from machine.schemas.responses.recommend import *
 from machine.controllers import *
 from machine.providers import InternalProvider
 from core.utils.get_current_user import get_current_user
-from machine.schemas.responses.courses import *
 from core.exceptions import NotFoundException, BadRequestException
+
 router = APIRouter(prefix="/recommend_lessons", tags=["recommendation"])
 
 
@@ -21,7 +21,7 @@ async def recommend_lesson(
     # Fetch the lesson recommendation details
     recommend_lesson = await recommend_lessons_controller.recommend_lessons_repository.first(
         where_=[RecommendLessons.id == recommendLessonId],
-        relations=[RecommendLessons.modules,  RecommendLessons.lesson, RecommendLessons.learning_path],
+        relations=[RecommendLessons.modules, RecommendLessons.learning_path],
     )
 
     if not recommend_lesson:
@@ -29,22 +29,18 @@ async def recommend_lesson(
 
     if not recommend_lesson.learning_path.user_id == current_user.id:
         raise NotFoundException(message="You are not authorized to access this recommend lesson.")
-    
-    lesson = recommend_lesson.lesson
-    if not lesson:
-        raise NotFoundException(message="Associated Lesson not found for the given Recommend Lesson.")
-    
+
     get_modules = recommend_lesson.modules
     if not get_modules:
         raise NotFoundException(message="Modules not found for the given Recommend Lesson.")
 
     response_data = RecommendLessonResponse(
-        lesson_id=recommend_lesson.id,
-        name=lesson.title,
-        learning_outcomes=[outcome for outcome in lesson.learning_outcomes],
-        description=lesson.description,
+        id=recommend_lesson.id,
+        title=recommend_lesson.title,
+        learning_outcomes=recommend_lesson.learning_outcomes or [],
+        description=recommend_lesson.description,
         progress=recommend_lesson.progress,
-        status=recommend_lesson.status,
+        status=str(recommend_lesson.status),
         recommend_content=recommend_lesson.recommended_content,
         explain=recommend_lesson.explain,
         start_date=recommend_lesson.start_date,
@@ -69,8 +65,6 @@ async def bookmark_recommend_lesson(
     current_user: Users = Depends(get_current_user),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
 ):
-
-    # Fetch the lesson recommendation details
     recommend_lesson = await recommend_lessons_controller.recommend_lessons_repository.first(
         where_=[RecommendLessons.id == recommendLessonId]
     )
@@ -79,8 +73,6 @@ async def bookmark_recommend_lesson(
         raise NotFoundException(message="Recommend Lesson not found for the given ID.")
     
     update_bookmark = not recommend_lesson.bookmark
-    print(f"Bookmark status before update: {recommend_lesson.bookmark}")
-    print(f"Bookmark status after update: {update_bookmark}")
     updated_recommend_lesson = await recommend_lessons_controller.recommend_lessons_repository.update(
         where_=[RecommendLessons.id == recommendLessonId],
         attributes={
@@ -92,10 +84,8 @@ async def bookmark_recommend_lesson(
     if not updated_recommend_lesson:
         raise NotFoundException(message="Bookmark not found for the given Recommend Lesson.")
     
-    # Create a Pydantic model or dict representation instead of returning the SQLAlchemy model directly
     result = {
         "id": str(updated_recommend_lesson.id),
-        "lesson_id": str(updated_recommend_lesson.lesson_id) if updated_recommend_lesson.lesson_id else None,
         "bookmark": updated_recommend_lesson.bookmark,
     }
     

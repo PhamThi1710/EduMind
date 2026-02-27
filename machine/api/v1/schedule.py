@@ -1,14 +1,11 @@
 from typing import List
 from core.response import Ok
-from machine.models import *
-from datetime import datetime
+from machine.models import Courses, Exercises, Users
 import datetime
-from machine.controllers import *
-from machine.schemas.requests import *
+from machine.controllers import CoursesController, ExercisesController
 from machine.providers import InternalProvider
 from machine.schemas.responses.dashboard import *
-from fastapi import APIRouter, Depends, HTTPException
-from core.exceptions import NotFoundException, BadRequestException
+from fastapi import APIRouter, Depends
 from core.utils.get_current_user import get_current_user
 
 router = APIRouter(prefix="/schedule", tags=["schedule"])
@@ -17,29 +14,25 @@ router = APIRouter(prefix="/schedule", tags=["schedule"])
 async def get_all_events(
     current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
     exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
 ):
-    # Determine if user is an owner (professor/admin) or a student by checking both
+    # Get courses where user is owner
     owner_courses = await courses_controller.courses_repository.get_many(
         where_=[Courses.owner_id == current_user.id]
     )
 
-    courses = []
+    # Get courses where user is a member
+    member_courses = await courses_controller.courses_repository.get_many(
+        where_=[Courses.members.any(str(current_user.id))]
+    )
 
-    if owner_courses:
-        courses = owner_courses
-    else:
-        # User is a student enrolled in courses
-        student_courses = await student_courses_controller.student_courses_repository.get_many(
-            where_=[StudentCourses.user_id == current_user.id]
-        )
-        for sc in student_courses:
-            course = await courses_controller.courses_repository.first(
-                where_=[Courses.id == sc.course_id]
-            )
-            if course:
-                courses.append(course)
+    # Combine both, avoiding duplicates
+    course_ids = set()
+    courses = []
+    for c in (owner_courses or []) + (member_courses or []):
+        if c.id not in course_ids:
+            course_ids.add(c.id)
+            courses.append(c)
 
     upcoming_exercises_list = []
     current_time = datetime.datetime.utcnow()
@@ -62,8 +55,7 @@ async def get_all_events(
             exercise_type=item["exercise"].type,
             course_name=item["course"].name,
             course_id=item["course"].id,
-            course_courseID=item["course"].courseID,
-            course_nSemester=item["course"].nSemester,
+
         )
         for item in upcoming_exercises_list
     ]

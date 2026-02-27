@@ -4,883 +4,570 @@ from datetime import date, datetime
 from typing import List, Literal, Optional, Union
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
-from sqlalchemy import and_
+from fastapi import APIRouter, Depends, File, Query, UploadFile, Form
+from sqlalchemy import and_, or_, func
 
-from core.exceptions import BadRequestException, ForbiddenException, NotFoundException
+from core.exceptions import (
+    BadRequestException,
+    ForbiddenException,
+    NotFoundException,
+)
 from core.response import Ok
-from core.utils.file import generate_presigned_url, update_course_image_s3
+from core.utils.file import upload_image
 from core.utils.get_current_user import get_current_user
 from machine.controllers import (
     CoursesController,
     DocumentsController,
     ExercisesController,
+    ExtractedTextController,
     LearningPathsController,
-    LessonsController,
-    StudentCoursesController,
+    RecommendLessonsController,
 )
 from machine.models import (
     Courses,
     Documents,
     Exercises,
     LearningPaths,
-    Lessons,
-    StudentCourses,
+    RecommendLessons,
     Users,
 )
-from machine.models import *  # keep for schema/response model symbols
 from machine.providers import InternalProvider
-from machine.schemas.requests import *
-from machine.schemas.responses.courses import *
-from machine.schemas.responses.exercise import *
-from machine.schemas.responses.learning_path import LearningPathDTO, RecommendedLessonDTO
+from machine.schemas.requests.courses import (
+    CreateCourseRequest,
+    UpdateCourseRequest,
+    PutLearningOutcomesCoursesRequest,
+    JoinCourseRequest,
+)
+from machine.schemas.responses.courses import (
+    GetAdminCoursesPaginatedResponse,
+    GetAdminCoursesResponse,
+    GetCourseDetailResponse,
+    GetCoursesPaginatedResponse,
+    GetCoursesResponse,
+    GetDocumentsResponse,
+    PutLearningOutcomesCoursesResponse,
+)
 from machine.schemas.responses.progress_tracking import GetCoursesListResponse
-from utils.data import availableCourses
 
 router = APIRouter(prefix="/courses", tags=["courses"])
-# Fixed routes should come first
 
 
-@router.get("/", response_model=Ok[List[GetCoursesListResponse]])
+# ---------------------------------------------------------------------------
+# GET /  – List courses for authenticated user (owned + member)
+# ---------------------------------------------------------------------------
+@router.get("/", response_model=Ok[GetCoursesPaginatedResponse])
 async def get_courses(
-    current_user: Users = Depends(get_current_user),
-    courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-):
-    """Get the list of courses for the authenticated user (owner for admin role)."""
-    courses = await courses_controller.courses_repository.get_many(
-        where_=[Courses.owner_id == current_user.id],
-        order_={"desc": ["start_date"]},
-    )
-
-    if not courses:
-        raise NotFoundException(message="No courses found.")
-
-    course_list = [
-        GetCoursesListResponse(
-            course_id=course.id,
-            course_name=course.name,
-            course_courseID=course.courseID,
-            course_nSemester=course.nSemester,
-            course_class_name=course.class_name,
-            course_start_date=course.start_date,
-            course_end_date=course.end_date,
-        )
-        for course in courses
-    ]
-    return Ok(data=course_list, message="Successfully fetched the course list.")
-
-
-@router.get("/student", response_model=Ok[GetCoursesPaginatedResponse])
-async def get_student_courses(
     current_user: Users = Depends(get_current_user),
     page: int = Query(1, description="Page number"),
     page_size: int = Query(10, description="Number of items per page"),
-    search_query: Optional[str] = Query(None, description="Search query to filter courses"),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
-    learning_paths_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
+    courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
 ):
-    where_conditions = (
-        [StudentCourses.user_id == current_user.id, Courses.name.ilike(f"%{search_query}%")]
-        if search_query
-        else [StudentCourses.user_id == current_user.id]
+    """Get all courses where the user is owner or member."""
+    # Courses owned by user
+    owned = await courses_controller.courses_repository.get_many(
+        where_=[Courses.owner_id == current_user.id],
     )
-    select_fields = [
-        Courses.id.label("id"),
-        Courses.name.label("name"),
-        Courses.start_date.label("start_date"),
-        Courses.end_date.label("end_date"),
-        Courses.learning_outcomes.label("learning_outcomes"),
-        Courses.status.label("status"),
-        Courses.image_url.label("image_url"),
-        Courses.nCredit.label("nCredit"),
-        Courses.nSemester.label("nSemester"),
-        Courses.courseID.label("courseID"),
-        Courses.class_name.label("class_name"),
-        StudentCourses.last_accessed.label("last_accessed"),
-        StudentCourses.percentage_done.label("percentage_complete"),
+    # Courses where user is a member
+    member = await courses_controller.courses_repository.get_many(
+        where_=[Courses.members.any(str(current_user.id))],
+    )
+
+    # Merge and deduplicate
+    seen_ids = set()
+    all_courses = []
+    for c in owned + member:
+        if c.id not in seen_ids:
+            seen_ids.add(c.id)
+            all_courses.append(c)
+
+    total = len(all_courses)
+    total_pages = math.ceil(total / page_size) if total > 0 else 1
+    start = (page - 1) * page_size
+    end = start + page_size
+    paginated = all_courses[start:end]
+
+    content = [
+        GetCoursesResponse(
+            id=c.id,
+            name=c.name,
+            description=c.description,
+            start_date=str(c.start_date) if c.start_date else None,
+            end_date=str(c.end_date) if c.end_date else None,
+            image_url=c.image_url,
+
+            learning_outcomes=c.learning_outcomes,
+            status=c.status,
+            is_owner=(c.owner_id == current_user.id),
+            members_count=len(c.members) if c.members else 0,
+        )
+        for c in paginated
     ]
-    join_conditions = {"courses": {"type": "left", "alias": "courses_alias"}}
-
-    courses = await student_courses_controller.student_courses_repository._get_many(
-        where_=where_conditions,
-        fields=select_fields,
-        join_=join_conditions,
-        order_={"asc": ["last_accessed"]},
-        limit=page_size,
-        skip=(page - 1) * page_size,
-    )
-
-    if not courses:
-        return Ok(
-            data={"content": [], "pageSize": page_size, "currentPage": page, "totalRows": 0, "totalPages": 0},
-            message="No courses found.",
-        )
-
-    total_page = math.ceil(len(courses) / page_size)
-    content = []
-    for course in courses:
-        learning_path = await learning_paths_controller.get_learning_path(
-            user_id=current_user.id, course_id=course.id
-        )
-        course_response = GetCoursesResponse(
-            id=course.id,
-            name=course.name,
-            start_date=str(course.start_date),
-            end_date=str(course.end_date),
-            learning_outcomes=course.learning_outcomes or [],
-            status=course.status,
-            image_url=generate_presigned_url(course.image_url, expiration=604800) if course.image_url else "",
-            last_accessed=str(course.last_accessed),
-            nCredit=course.nCredit,
-            nSemester=course.nSemester,
-            courseID=course.courseID,
-            class_name=str(course.class_name),
-            percentage_complete=str(learning_path.progress) if learning_path else "0",
-        )
-        content.append(course_response)
 
     return Ok(
-        data={"content": content, "pageSize": page_size, "currentPage": page, "totalRows": len(courses), "totalPages": total_page},
-        message="Successfully fetched the courses.",
+        data=GetCoursesPaginatedResponse(
+            content=content,
+            currentPage=page,
+            pageSize=page_size,
+            totalRows=total,
+            totalPages=total_pages,
+        ),
+        message="Successfully fetched courses.",
     )
 
 
-@router.get("/count/", response_model=Ok[int])
+# ---------------------------------------------------------------------------
+# GET /count – Total count of owned courses
+# ---------------------------------------------------------------------------
+@router.get("/count", response_model=Ok[int])
 async def count_courses(
     current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
 ):
-    if current_user.role != "admin":
-        raise ForbiddenException(message="You are not allowed to access this feature.")
-    count = await courses_controller.courses_repository.count(where_=None)
+    count = await courses_controller.courses_repository.count(
+        where_=[Courses.owner_id == current_user.id]
+    )
     return Ok(data=count, message="Successfully fetched the count of courses.")
 
 
-@router.get("/available", description="Get all available courses of HCMUT")
-async def get_available_courses(
-    current_user: Users = Depends(get_current_user),
-):
-    return Ok(data=availableCourses, message="Successfully fetched the available courses.")
-
-
-@router.post("/add-students", response_model=Ok[AddStudentsToCourseResponse])
-async def add_students_to_course(
-    request: AddStudentsToCourseRequest,
-    current_user: Users = Depends(get_current_user),
-    courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
-    user_controller=Depends(InternalProvider().get_user_controller),
-):
-    if current_user.role not in ("admin",):
-        raise ForbiddenException(message="You are not allowed to add students to courses.")
-
-    if not request.course_id:
-        raise BadRequestException(message="Course ID is required.")
-    if not request.student_ids or len(request.student_ids) == 0:
-        raise BadRequestException(message="At least one student ID is required.")
-
-    course = await courses_controller.courses_repository.first(where_=[Courses.id == request.course_id])
-    if not course:
-        raise NotFoundException(message=f"Course with ID {request.course_id} not found.")
-
-    # Look up users by student_id_number (replaces mssv)
-    users = await user_controller.user_repository._get_many(
-        where_=[Users.student_id_number.in_(request.student_ids)],
-        fields=[Users.id, Users.student_id_number]
-    )
-    if not users:
-        raise NotFoundException(message="No valid users found with the provided student IDs.")
-
-    existing_enrollments = await student_courses_controller.student_courses_repository._get_many(
-        where_=[
-            StudentCourses.course_id == request.course_id,
-            StudentCourses.user_id.in_([u["id"] for u in users])
-        ],
-        fields=[StudentCourses.user_id]
-    )
-    enrolled_user_ids = {e["user_id"] for e in existing_enrollments}
-    users_to_enroll = [u for u in users if u["id"] not in enrolled_user_ids]
-
-    if not users_to_enroll:
-        return Ok(
-            data={"course_id": course.id, "course_name": course.name, "added_students_count": 0,
-                  "already_enrolled_count": len(request.student_ids), "student_courses_list": []},
-            message="All provided students are already enrolled in this course.",
-        )
-
-    sc_attributes = [{"user_id": u["id"], "course_id": request.course_id} for u in users_to_enroll]
-    try:
-        create_student_courses = await student_courses_controller.student_courses_repository.create_many(
-            attributes_list=sc_attributes, commit=True
-        )
-        if not create_student_courses:
-            raise Exception("Failed to add students to the course - no records returned.")
-
-        sc_response = []
-        for sc in create_student_courses:
-            mssv = None
-            for u in users_to_enroll:
-                if str(u["id"]) == str(sc.user_id):
-                    mssv = u.get("student_id_number")
-                    break
-            sc_response.append(StudentCourseInfo(
-                student_id=str(sc.user_id),
-                student_mssv=mssv,
-                course_id=str(sc.course_id),
-                last_accessed=str(sc.last_accessed) if hasattr(sc, 'last_accessed') else None,
-                completed_lessons=sc.completed_lessons if hasattr(sc, 'completed_lessons') else None,
-                time_spent=str(sc.time_spent) if hasattr(sc, 'time_spent') else None,
-                percentage_done=sc.percentage_done if hasattr(sc, 'percentage_done') else None,
-            ))
-
-        already_enrolled_count = len(request.student_ids) - len(users_to_enroll)
-        response = AddStudentsToCourseResponse(
-            course_id=str(course.id),
-            course_name=course.name,
-            added_students_count=len(create_student_courses),
-            already_enrolled_count=already_enrolled_count,
-            student_courses_list=sc_response,
-        )
-        return Ok(
-            data=response,
-            message=f"Successfully added {len(create_student_courses)} student(s) to the course. {already_enrolled_count} student(s) were already enrolled.",
-        )
-    except Exception as e:
-        print(f"Error adding students to course: {str(e)}")
-        raise Exception(f"Failed to add students to the course: {str(e)}")
-
-
-@router.get("/admin", description="Get all courses for admin", response_model=Ok[GetAdminCoursesPaginatedResponse])
+# ---------------------------------------------------------------------------
+# GET /admin – List all courses (admin only)
+# ---------------------------------------------------------------------------
+@router.get("/admin", response_model=Ok[GetAdminCoursesPaginatedResponse])
 async def get_all_courses_admin(
     current_user: Users = Depends(get_current_user),
-    search_query: Optional[str] = Query(None, description="Search query to filter courses by name or courseID"),
-    page: int = Query(1, description="Page number"),
-    page_size: int = Query(10, description="Number of items per page"),
-    nCredit: Optional[int] = Query(None),
-    nSemester: Optional[int] = Query(None),
+    search_query: Optional[str] = Query(None),
+    page: int = Query(1),
+    page_size: int = Query(10),
+    status: Optional[str] = Query(None),
+
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
 ):
     if current_user.role != "admin":
-        raise ForbiddenException(message="You are not allowed to access this feature.")
+        raise ForbiddenException(message="Only admins can access this endpoint.")
 
-    where_conditions = []
+    filters = []
     if search_query:
-        where_conditions.append((Courses.name.ilike(f"%{search_query}%")) | (Courses.courseID.ilike(f"%{search_query}%")))
-    if nCredit is not None:
-        where_conditions.append(Courses.nCredit == nCredit)
-    if nSemester is not None:
-        where_conditions.append(Courses.nSemester == nSemester)
+        filters.append(Courses.name.ilike(f"%{search_query}%"))
+    if status:
+        filters.append(Courses.status == status)
+
     if start_date:
-        where_conditions.append(Courses.start_date >= start_date)
+        filters.append(Courses.start_date >= start_date)
     if end_date:
-        where_conditions.append(Courses.end_date <= end_date)
+        filters.append(Courses.end_date <= end_date)
 
-    select_fields = [
-        Courses.id.label("id"),
-        Courses.name.label("name"),
-        Courses.start_date.label("start_date"),
-        Courses.end_date.label("end_date"),
-        Courses.learning_outcomes.label("learning_outcomes"),
-        Courses.status.label("status"),
-        Courses.image_url.label("image"),
-        Courses.nCredit.label("nCredit"),
-        Courses.nSemester.label("nSemester"),
-        Courses.courseID.label("courseID"),
-        Courses.class_name.label("class_name"),
-        Courses.owner_id.label("owner_id"),
-    ]
+    total = await courses_controller.courses_repository.count(where_=filters)
+    total_pages = math.ceil(total / page_size) if total > 0 else 1
 
-    courses = await courses_controller.courses_repository._get_many(
-        where_=where_conditions,
-        fields=select_fields,
-        order_={"desc": ["start_date"]},
+    courses = await courses_controller.courses_repository.get_many(
+        where_=filters,
+        order_={"desc": [{"field": "created_at", "model_class": Courses}]},
         limit=page_size,
-        skip=(page - 1) * page_size,
+        offset=(page - 1) * page_size,
+        relations=[Courses.owner],
     )
 
-    if not courses:
-        return Ok(
-            data={"content": [], "pageSize": page_size, "currentPage": page, "totalRows": 0, "totalPages": 0},
-            message="No courses found.",
+    content = [
+        GetAdminCoursesResponse(
+            id=c.id,
+            name=c.name,
+            description=c.description,
+            start_date=str(c.start_date) if c.start_date else None,
+            end_date=str(c.end_date) if c.end_date else None,
+            status=c.status,
+
+            owner_name=c.owner.full_name if c.owner else None,
+            members_count=len(c.members) if c.members else 0,
         )
+        for c in courses
+    ]
 
-    total_rows = await courses_controller.courses_repository.count(where_=where_conditions)
-    total_pages = math.ceil(total_rows / page_size)
+    return Ok(
+        data=GetAdminCoursesPaginatedResponse(
+            content=content,
+            currentPage=page,
+            pageSize=page_size,
+            totalRows=total,
+            totalPages=total_pages,
+        ),
+        message="Successfully fetched all courses.",
+    )
 
-    courses_response = {
-        "content": [
-            GetAdminCoursesResponse(
-                id=course.id,
-                name=course.name,
-                start_date=str(course.start_date),
-                end_date=str(course.end_date),
-                status=course.status,
-                nCredit=course.nCredit if course.nCredit else 0,
-                nSemester=course.nSemester if course.nSemester else 0,
-                courseID=course.courseID,
-                class_name=course.class_name if course.class_name else "",
-                professor_id=str(course.owner_id) if course.owner_id else "",
+
+# ---------------------------------------------------------------------------
+# POST / – Create a new course (any user)
+# ---------------------------------------------------------------------------
+@router.post("/", response_model=Ok[dict])
+async def create_course(
+    name: str = Form(...),
+    description: Optional[str] = Form(None),
+    learning_outcomes: Optional[List[str]] = Form(None),
+    start_date: Optional[date] = Form(None),
+    end_date: Optional[date] = Form(None),
+
+    files: List[UploadFile] = File(None),
+    file_descriptions: List[str] = Form(None),
+    current_user: Users = Depends(get_current_user),
+    courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
+    documents_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
+    extracted_text_controller: ExtractedTextController = Depends(InternalProvider().get_extracted_text_controller),
+):
+    """Create a course. Optionally upload documents at creation time."""
+    from utils.file_processor import process_document
+
+    course = await courses_controller.courses_repository.create(
+        attributes={
+            "name": name,
+            "description": description,
+            "owner_id": current_user.id,
+            "members": [],
+            "learning_outcomes": learning_outcomes or [],
+            "start_date": start_date,
+            "end_date": end_date,
+
+        },
+        commit=True,
+    )
+
+    created_docs = []
+    if files:
+        for idx, file in enumerate(files):
+            desc = file_descriptions[idx] if file_descriptions and idx < len(file_descriptions) else file.filename
+            doc_url, _ = await upload_image(file, str(course.id))
+            doc = await documents_controller.documents_repository.create(
+                attributes={
+                    "course_id": course.id,
+                    "name": file.filename,
+                    "type": file.content_type or "application/octet-stream",
+                    "description": desc,
+                    "document_url": doc_url,
+                    "status": "processing",
+                },
+                commit=True,
             )
-            for course in courses
-        ],
-        "pageSize": page_size,
-        "currentPage": page,
-        "totalRows": total_rows,
-        "totalPages": total_pages,
-    }
-    return Ok(data=courses_response, message="Successfully fetched the courses.")
+            created_docs.append({"id": str(doc.id), "name": doc.name})
+            # Process document in background
+            try:
+                await process_document(doc, extracted_text_controller, documents_controller)
+            except Exception:
+                pass
+
+    return Ok(
+        data={
+            "course_id": str(course.id),
+            "name": course.name,
+            "documents": created_docs,
+        },
+        message="Course created successfully.",
+    )
 
 
-@router.patch("/{course_id}/image", response_model=Ok)
+# ---------------------------------------------------------------------------
+# POST /join – Join a course
+# ---------------------------------------------------------------------------
+@router.post("/join", response_model=Ok[dict])
+async def join_course(
+    request: JoinCourseRequest,
+    current_user: Users = Depends(get_current_user),
+    courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
+):
+    """Join another user's course. Adds current user to members list."""
+    course = await courses_controller.courses_repository.first(
+        where_=[Courses.id == request.course_id]
+    )
+    if not course:
+        raise NotFoundException(message="Course not found.")
+
+    if course.owner_id == current_user.id:
+        raise BadRequestException(message="You are already the owner of this course.")
+
+    current_members = list(course.members) if course.members else []
+    if current_user.id in current_members:
+        raise BadRequestException(message="You are already a member of this course.")
+
+    current_members.append(current_user.id)
+    await courses_controller.courses_repository.update(
+        where_=[Courses.id == request.course_id],
+        attributes={"members": current_members},
+        commit=True,
+    )
+    return Ok(data={"course_id": str(course.id)}, message="Successfully joined the course.")
+
+
+# ---------------------------------------------------------------------------
+# POST /leave – Leave a course
+# ---------------------------------------------------------------------------
+@router.post("/leave", response_model=Ok[dict])
+async def leave_course(
+    request: JoinCourseRequest,
+    current_user: Users = Depends(get_current_user),
+    courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
+):
+    """Leave a course. Removes current user from members list."""
+    course = await courses_controller.courses_repository.first(
+        where_=[Courses.id == request.course_id]
+    )
+    if not course:
+        raise NotFoundException(message="Course not found.")
+
+    if course.owner_id == current_user.id:
+        raise BadRequestException(message="Owner cannot leave their own course.")
+
+    current_members = list(course.members) if course.members else []
+    if current_user.id not in current_members:
+        raise BadRequestException(message="You are not a member of this course.")
+
+    current_members.remove(current_user.id)
+    await courses_controller.courses_repository.update(
+        where_=[Courses.id == request.course_id],
+        attributes={"members": current_members},
+        commit=True,
+    )
+    return Ok(data={"course_id": str(course.id)}, message="Successfully left the course.")
+
+
+# ---------------------------------------------------------------------------
+# PATCH /{course_id}/image – Update course image
+# ---------------------------------------------------------------------------
+@router.patch("/{course_id}/image", response_model=Ok[dict])
 async def update_course_image(
     course_id: str,
     file: UploadFile = File(...),
     current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
 ):
-    course = await courses_controller.courses_repository.first(where_=[Courses.id == course_id])
-    if not course:
-        raise NotFoundException(message=f"Course with ID {course_id} not found.")
-
-    if course.owner_id != current_user.id:
-        raise ForbiddenException(message="You don't have permission to update this course.")
-
-    allowed_extensions = ['.jpg', '.jpeg', '.png', '.gif']
-    file_extension = os.path.splitext(file.filename)[1].lower()
-    if file_extension not in allowed_extensions:
-        raise BadRequestException(message="Invalid file type. Only JPG, JPEG, PNG, and GIF files are allowed.")
-
-    file_content = await file.read()
-    existing_image_key = course.image_url
-    s3_key, presigned_url = await update_course_image_s3(
-        existing_image_key,
-        file_content,
-        f"course_{course_id}{file_extension}"
+    course = await courses_controller.courses_repository.first(
+        where_=[Courses.id == course_id]
     )
+    if not course:
+        raise NotFoundException(message="Course not found.")
+    if course.owner_id != current_user.id:
+        raise ForbiddenException(message="Only the course owner can update the image.")
 
-    await courses_controller.courses_repository.update(
+    image_url, _ = await upload_image(file, course_id)
+    updated = await courses_controller.courses_repository.update(
         where_=[Courses.id == course_id],
-        attributes={"image_url": s3_key},
+        attributes={"image_url": image_url},
         commit=True,
     )
-    return Ok(message="Course image updated successfully.", data={"image_url": presigned_url})
+    return Ok(data={"image_url": updated.image_url}, message="Course image updated.")
 
 
+# ---------------------------------------------------------------------------
+# GET /{courseId} – Get course details
+# ---------------------------------------------------------------------------
 @router.get("/{courseId}", response_model=Ok[GetCourseDetailResponse])
-async def get_course_for_student(
-    courseId: str,
-    current_user: Users = Depends(get_current_user),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
-    learning_paths_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
-):
-    select_fields = [
-        Courses.name.label("name"),
-        Courses.id.label("id"),
-        Courses.start_date.label("start_date"),
-        Courses.end_date.label("end_date"),
-        Courses.learning_outcomes.label("learning_outcomes"),
-        Courses.status.label("status"),
-        Courses.image_url.label("image_url"),
-        Courses.nCredit.label("nCredit"),
-        Courses.nSemester.label("nSemester"),
-        Courses.courseID.label("courseID"),
-        Courses.class_name.label("class_name"),
-        StudentCourses.last_accessed.label("last_accessed"),
-        StudentCourses.completed_lessons.label("completed_lessons"),
-        StudentCourses.time_spent.label("time_spent"),
-        StudentCourses.percentage_done.label("percentage_done"),
-    ]
-    join_conditions = {"courses": {"type": "left", "alias": "courses_alias"}}
-
-    course = await student_courses_controller.student_courses_repository._get_many(
-        where_=[and_(StudentCourses.course_id == courseId, StudentCourses.user_id == current_user.id)],
-        fields=select_fields,
-        join_=join_conditions,
-    )
-    get_course = course[0] if course else None
-    try:
-        learning_path = await learning_paths_controller.get_learning_path(
-            user_id=current_user.id, course_id=courseId
-        )
-    except NotFoundException:
-        learning_path = None
-
-    if not course:
-        return Ok(
-            data=GetCourseDetailResponse(
-                course_id=courseId, course_name="", course_start_date="", course_end_date="",
-                course_learning_outcomes=[], course_status="", course_image="",
-                course_nCredit=0, course_nSemester=0, course_courseID="", course_classname="",
-                course_percentage_complete="", course_last_accessed="",
-                completed_lessons=0, time_spent="", percentage_done=0,
-            ),
-            message="You are not enrolled in this course.",
-        )
-
-    image_url = generate_presigned_url(get_course.image_url, expiration=604800) if get_course.image_url else ""
-    course_response = GetCourseDetailResponse(
-        course_id=str(courseId),
-        course_name=get_course.name,
-        course_start_date=str(get_course.start_date) if get_course.start_date else "",
-        course_end_date=str(get_course.end_date) if get_course.end_date else "",
-        course_learning_outcomes=get_course.learning_outcomes or [],
-        course_status=get_course.status,
-        course_image=image_url,
-        course_nCredit=get_course.nCredit,
-        course_nSemester=get_course.nSemester,
-        course_courseID=get_course.courseID,
-        course_classname=get_course.class_name,
-        course_percentage_complete=str(learning_path.progress) if learning_path else "0",
-        course_last_accessed=str(get_course.last_accessed) if get_course.last_accessed else "",
-        completed_lessons=get_course.completed_lessons or 0,
-        time_spent=str(get_course.time_spent) if get_course.time_spent else "",
-        percentage_done=str(learning_path.progress) if learning_path else "0",
-    )
-    return Ok(data=course_response, message="Successfully fetched the course.")
-
-
-@router.get("/{courseId}/professor", response_model=Ok[ProfessorInformation])
-async def get_professor_for_course(
+async def get_course_detail(
     courseId: str,
     current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    user_controller=Depends(InternalProvider().get_user_controller),
+    documents_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
+    exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
 ):
-    course = await courses_controller.courses_repository.first(where_=[Courses.id == courseId])
+    course = await courses_controller.courses_repository.first(
+        where_=[Courses.id == courseId],
+    )
     if not course:
         raise NotFoundException(message="Course not found.")
 
-    owner = await user_controller.user_repository.first(where_=[Users.id == course.owner_id])
-    if not owner:
-        raise NotFoundException(message="Course owner not found.")
+    # Check access: owner, member, or admin
+    is_owner = course.owner_id == current_user.id
+    is_member = current_user.id in (course.members or [])
+    if not is_owner and not is_member and current_user.role != "admin":
+        raise ForbiddenException(message="You don't have access to this course.")
 
-    professor_response = ProfessorInformation(
-        professor_id=owner.id,
-        professor_name=owner.full_name or "",
-        professor_email=owner.email,
-        professor_avatar=str(owner.avatar_url) if owner.avatar_url else "",
+    n_docs = await documents_controller.documents_repository.count(
+        where_=[Documents.course_id == course.id]
     )
-    return Ok(data=professor_response, message="Successfully fetched the professor.")
-
-
-@router.get("/{courseId}/students", response_model=Ok[List[StudentList]])
-async def get_students_for_course(
-    courseId: str,
-    current_user: Users = Depends(get_current_user),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
-    user_controller=Depends(InternalProvider().get_user_controller),
-):
-    select_fields = [
-        Users.id.label("id"),
-        Users.full_name.label("name"),
-        Users.email.label("email"),
-        Users.avatar_url.label("avatar_url"),
-        Users.student_id_number.label("ms"),
-    ]
-    join_conditions = {"user": {"type": "left", "table": Users}}
-
-    students = await student_courses_controller.student_courses_repository._get_many(
-        where_=[StudentCourses.course_id == courseId],
-        fields=select_fields,
-        join_=join_conditions,
+    n_exercises = await exercises_controller.exercises_repository.count(
+        where_=[Exercises.course_id == course.id]
     )
 
-    if not students:
-        return Ok(data=[], message="No students found.")
+    return Ok(
+        data=GetCourseDetailResponse(
+            course_id=course.id,
+            course_name=course.name,
+            course_description=course.description,
+            course_start_date=str(course.start_date) if course.start_date else None,
+            course_end_date=str(course.end_date) if course.end_date else None,
+            course_learning_outcomes=course.learning_outcomes or [],
+            course_status=str(course.status),
+            course_image=course.image_url,
 
-    students_response = [
-        StudentList(
-            student_id=student.id,
-            student_name=student.name or "",
-            student_email=student.email,
-            student_avatar=str(student.avatar_url) if student.avatar_url else "",
-            student_mssv=student.ms or "",
-        )
-        for student in students
-    ]
-    return Ok(data=students_response, message="Successfully fetched the students.")
+            is_owner=is_owner,
+            members_count=len(course.members) if course.members else 0,
+            nDocuments=n_docs,
+            nExercises=n_exercises,
+        ),
+        message="Successfully fetched course details.",
+    )
 
 
-@router.get("/{courseId}/lessons", response_model=Ok[List[GetLessonsResponse]])
-async def get_lessons_for_course(
+# ---------------------------------------------------------------------------
+# GET /{courseId}/documents – List documents for a course
+# ---------------------------------------------------------------------------
+@router.get("/{courseId}/documents", response_model=Ok[List[GetDocumentsResponse]])
+async def get_documents_for_course(
     courseId: str,
     current_user: Users = Depends(get_current_user),
-    lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     documents_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
 ):
-    select_fields = [
-        Lessons.id.label("id"),
-        Lessons.title.label("title"),
-        Lessons.description.label("description"),
-        Lessons.learning_outcomes.label("learning_outcomes"),
-        Lessons.order.label("order"),
-    ]
-
-    lessons = await lessons_controller.lessons_repository._get_many(
-        where_=[Lessons.course_id == courseId],
-        fields=select_fields,
+    docs = await documents_controller.documents_repository.get_many(
+        where_=[Documents.course_id == courseId],
     )
+    from core.utils.file import generate_presigned_url
 
-    if not lessons:
-        return Ok(data=[], message="No lessons found.")
-
-    lessons_response = [
-        GetLessonsResponse(
-            id=lesson.id,
-            title=lesson.title,
-            description=lesson.description or "",
-            learning_outcomes=lesson.learning_outcomes or [],
-            order=lesson.order,
-            nDocuments=await documents_controller.documents_repository.count(where_=[Documents.lesson_id == lesson.id]),
+    result = []
+    for d in docs:
+        url = generate_presigned_url(d.document_url) if d.document_url else ""
+        result.append(
+            GetDocumentsResponse(id=d.id, name=d.name, type=d.type, url=url)
         )
-        for lesson in lessons
-    ]
-    return Ok(data=lessons_response, message="Successfully fetched the lessons.")
+    return Ok(data=result, message="Successfully fetched documents.")
 
 
-@router.get(
-    "/{courseId}/lessons_recommendation/",
-    response_model=Ok[List[GetLessonsRecommendationResponse]],
-)
-async def get_lessons_recommendation(
-    courseId: UUID,
-    current_user: Users = Depends(get_current_user),
-    learning_paths_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
-    lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
-):
-    where_learning_path_conditions = [
-        LearningPaths.user_id == current_user.id,
-        LearningPaths.course_id == courseId,
-    ]
-    learning_path = await learning_paths_controller.learning_paths_repository.first(
-        where_=where_learning_path_conditions,
-        relations=[LearningPaths.recommend_lessons, LearningPaths.course],
-    )
-
-    if not learning_path:
-        raise NotFoundException(message="Learning path not found for the given user and course.")
-
-    recommend_lessons = learning_path.recommend_lessons
-    course_name = learning_path.course.name if learning_path.course else "Unknown Course"
-
-    if not recommend_lessons:
-        raise NotFoundException(message="No recommended lessons found for the given learning path.")
-
-    recommended_lessons: List[GetLessonsRecommendationResponse] = []
-    for recommend_lesson in recommend_lessons:
-        lesson = await lessons_controller.lessons_repository.first(where_=[Lessons.id == recommend_lesson.id])
-        if not lesson:
-            continue
-        recommended_lessons.append(
-            GetLessonsRecommendationResponse(
-                course_id=courseId,
-                course_name=course_name,
-                lesson_id=lesson.id,
-                title=lesson.title,
-                description=lesson.description or "",
-                order=lesson.order,
-                bookmark=lesson.bookmark if hasattr(lesson, "bookmark") else False,
-                status=recommend_lesson.status,
-            )
-        )
-    return Ok(data=recommended_lessons, message="Successfully fetched the recommended lessons.")
-
-
-@router.post("/", response_model=Ok[Union[CreateCourseResponse, List[CreateCourseResponse]]])
-async def create_course(
-    request: List[CreateCourseRequest],
+# ---------------------------------------------------------------------------
+# PUT /{courseId}/learning-outcomes – Update learning outcomes
+# ---------------------------------------------------------------------------
+@router.put("/{courseId}/learning-outcomes", response_model=Ok[PutLearningOutcomesCoursesResponse])
+async def update_learning_outcomes(
+    courseId: str,
+    request: PutLearningOutcomesCoursesRequest,
     current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
-    user_controller=Depends(InternalProvider().get_user_controller),
 ):
-    if current_user.role != "admin":
-        raise ForbiddenException(message="Your account is not allowed to create a course.")
+    course = await courses_controller.courses_repository.first(
+        where_=[Courses.id == courseId]
+    )
+    if not course:
+        raise NotFoundException(message="Course not found.")
+    if course.owner_id != current_user.id:
+        raise ForbiddenException(message="Only the course owner can update learning outcomes.")
 
-    if not request or len(request) == 0:
-        raise BadRequestException(message="At least one course is required.")
-
-    async def resolve_owner(professor_id_number: str) -> UUID:
-        owner = await user_controller.user_repository.first(
-            where_=[Users.employee_id_number == professor_id_number]
-        )
-        if not owner:
-            raise NotFoundException(message=f"User with employee ID {professor_id_number} not found.")
-        return owner.id
-
-    async def enroll_users(owner_user_ids, course_id):
-        users = await user_controller.user_repository._get_many(
-            where_=[Users.student_id_number.in_(owner_user_ids)],
-            fields=[Users.id, Users.student_id_number]
-        )
-        sc_attrs = [{"user_id": u["id"], "course_id": course_id} for u in users]
-        if sc_attrs:
-            await student_courses_controller.student_courses_repository.create_many(
-                attributes_list=sc_attrs, commit=True
-            )
-        return users
-
-    if len(request) == 1:
-        r = request[0]
-        if not r.nSemester or not r.class_name:
-            raise BadRequestException(message="Semester and class name are required.")
-        existing = await courses_controller.courses_repository.first(
-            where_=[Courses.courseID == r.courseID, Courses.nSemester == r.nSemester, Courses.class_name == r.class_name]
-        )
-        if existing:
-            raise BadRequestException(message="Course already exists.")
-
-        owner_id = await resolve_owner(r.professorID)
-        course_attributes = {
-            "name": r.name,
-            "owner_id": owner_id,
-            "nCredit": r.creditNumber,
-            "nSemester": r.nSemester,
-            "createdByAdminID": current_user.id,
-            "courseID": r.courseID,
-            "start_date": r.startDate,
-            "end_date": r.endDate,
-            "class_name": r.class_name,
-        }
-        created_course = await courses_controller.courses_repository.create(attributes=course_attributes, commit=True)
-        if not created_course:
-            raise Exception("Failed to create course")
-
-        enrolled = await enroll_users(r.studentIDs, created_course.id)
-        return Ok(
-            data={
-                "course_id": created_course.id,
-                "courseID": created_course.courseID,
-                "name": created_course.name,
-                "owner_id": created_course.owner_id,
-                "start_date": str(created_course.start_date),
-                "end_date": str(created_course.end_date),
-                "status": created_course.status,
-                "nCredit": created_course.nCredit,
-                "nSemester": created_course.nSemester,
-                "learning_outcomes": created_course.learning_outcomes or "",
-                "image_url": str(created_course.image_url) if created_course.image_url else "",
-                "student_courses_count": len(enrolled),
-                "class_name": created_course.class_name,
-            },
-            message="Successfully created the course.",
-        )
-    else:
-        professor_ids = [c.professorID for c in request]
-        professors = await user_controller.user_repository._get_many(
-            where_=[Users.employee_id_number.in_(professor_ids)],
-            fields=[Users.id, Users.employee_id_number]
-        )
-        prof_id_map = {p["employee_id_number"]: p["id"] for p in professors}
-
-        courses_attributes = []
-        for r in request:
-            if not r.nSemester or not r.class_name:
-                raise BadRequestException(message="Semester and class name are required.")
-            existing = await courses_controller.courses_repository.first(
-                where_=[Courses.courseID == r.courseID, Courses.nSemester == r.nSemester, Courses.class_name == r.class_name]
-            )
-            if existing:
-                raise BadRequestException(message="Course already exists.")
-            if not r.name:
-                raise BadRequestException(message="Course name is required.")
-            owner_id = prof_id_map.get(r.professorID)
-            if not owner_id:
-                raise NotFoundException(message=f"User with employee ID {r.professorID} not found.")
-            courses_attributes.append({
-                "name": r.name,
-                "owner_id": owner_id,
-                "nCredit": r.creditNumber,
-                "nSemester": r.nSemester,
-                "createdByAdminID": current_user.id,
-                "status": "new",
-                "courseID": r.courseID,
-                "start_date": r.startDate,
-                "end_date": r.endDate,
-                "class_name": r.class_name,
-            })
-
-        create_courses = await courses_controller.courses_repository.create_many(
-            attributes_list=courses_attributes, commit=True
-        )
-        if not create_courses:
-            raise Exception("Failed to create courses")
-
-        courses_response = []
-        for created_course, req_course in zip(create_courses, request):
-            await enroll_users(req_course.studentIDs, created_course.id)
-            courses_response.append({
-                "course_id": created_course.id,
-                "courseID": created_course.courseID,
-                "name": created_course.name,
-                "owner_id": created_course.owner_id,
-                "start_date": str(created_course.start_date) if created_course.start_date else "",
-                "end_date": str(created_course.end_date) if created_course.end_date else "",
-                "status": created_course.status,
-                "nCredit": created_course.nCredit,
-                "nSemester": created_course.nSemester,
-                "learning_outcomes": created_course.learning_outcomes or "",
-                "image_url": str(created_course.image_url) if created_course.image_url else "",
-                "class_name": created_course.class_name,
-            })
-        return Ok(data=courses_response, message="Successfully created the courses.")
+    updated = await courses_controller.courses_repository.update(
+        where_=[Courses.id == courseId],
+        attributes={"learning_outcomes": request.learning_outcomes},
+        commit=True,
+    )
+    return Ok(
+        data=PutLearningOutcomesCoursesResponse(
+            course_id=updated.id,
+            learning_outcomes=updated.learning_outcomes,
+        ),
+        message="Learning outcomes updated.",
+    )
 
 
-@router.get("/{course_id}/personalized-lp", response_model=Ok[LearningPathDTO])
+# ---------------------------------------------------------------------------
+# GET /{course_id}/learning-path – Get personalised learning path
+# ---------------------------------------------------------------------------
+@router.get("/{course_id}/learning-path", response_model=Ok[dict])
 async def get_personalized_lp(
     course_id: UUID,
     current_user: Users = Depends(get_current_user),
     lp_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
 ):
-    lp = await lp_controller.get_learning_path(course_id=course_id, user_id=current_user.id)
-    return Ok(data=LearningPathDTO.model_validate(lp))
+    lp = await lp_controller.learning_paths_repository.first(
+        where_=[
+            LearningPaths.user_id == current_user.id,
+            LearningPaths.course_id == course_id,
+        ],
+    )
+    if not lp:
+        return Ok(data=None, message="No learning path found.")
+    return Ok(data={"id": str(lp.id), "progress": lp.progress, "objective": lp.objective}, message="OK")
 
 
-@router.get("/{course_id}/learning-path/recommended-lessons")
+# ---------------------------------------------------------------------------
+# GET /{course_id}/recommended-lessons – Get recommended lessons for a learning path
+# ---------------------------------------------------------------------------
+@router.get("/{course_id}/recommended-lessons")
 async def get_recommended_lessons(
     course_id: UUID,
     current_user: Users = Depends(get_current_user),
-    expand: Optional[Literal["modules"]] = Query(None, description="Expand related data, e.g., 'modules'."),
+    expand: Optional[Literal["modules"]] = Query(None),
     lp_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
 ):
-    recommended_lessons = await lp_controller.get_recommended_lessons(
-        user_id=current_user.id, course_id=course_id, expand=expand
+    lp = await lp_controller.learning_paths_repository.first(
+        where_=[
+            LearningPaths.user_id == current_user.id,
+            LearningPaths.course_id == course_id,
+        ],
+        relations=[LearningPaths.recommend_lessons],
     )
-    return Ok(data=recommended_lessons)
+    if not lp:
+        return Ok(data=[], message="No learning path found.")
+
+    lessons_data = []
+    for rl in lp.recommend_lessons:
+        item = {
+            "id": str(rl.id),
+            "title": rl.title,
+            "description": rl.description,
+            "progress": rl.progress,
+            "status": str(rl.status),
+            "bookmark": rl.bookmark,
+            "order": rl.order,
+            "start_date": rl.start_date,
+            "end_date": rl.end_date,
+        }
+        if expand == "modules":
+            from machine.models import Modules
+            modules = rl.modules or []
+            item["modules"] = [
+                {"id": str(m.id), "title": m.title, "progress": m.progress, "objectives": m.objectives}
+                for m in modules
+            ]
+        lessons_data.append(item)
+
+    return Ok(data=lessons_data, message="Successfully fetched recommended lessons.")
 
 
-@router.get("/{course_id}/students/{student_id}/learning-path/recommended-lessons")
-async def get_recommended_lessons_for_student(
-    course_id: UUID,
-    student_id: UUID,
+# ---------------------------------------------------------------------------
+# POST /{courseId}/documents – Upload documents to a course
+# ---------------------------------------------------------------------------
+@router.post("/{courseId}/documents", response_model=Ok[List[dict]])
+async def add_documents_to_course(
+    courseId: UUID,
+    files: List[UploadFile] = File(...),
+    descriptions: List[str] = Form(...),
     current_user: Users = Depends(get_current_user),
-    expand: Optional[Literal["modules"]] = Query(None, description="Expand related data, e.g., 'modules'."),
-    lp_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
-):
-    recommended_lessons = await lp_controller.get_recommended_lessons(
-        user_id=student_id, course_id=course_id, expand=expand
-    )
-    return Ok(data=recommended_lessons)
-
-
-@router.delete("/{course_id}/learning-path")
-async def delete_learning_path(
-    course_id: UUID,
-    current_user: Users = Depends(get_current_user),
-    lp_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
-):
-    await lp_controller.delete_learning_path(user_id=current_user.id, course_id=course_id)
-    return Ok(data=None, message="Successfully deleted the learning path.")
-
-
-@router.get("/{course_id}/exercises", response_model=Ok[List[GetExercise]])
-async def get_course_exercises(
-    course_id: UUID,
-    current_user: Users = Depends(get_current_user),
-    exercises_controller: ExercisesController = Depends(InternalProvider().get_exercises_controller),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
+    documents_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
+    extracted_text_controller: ExtractedTextController = Depends(InternalProvider().get_extracted_text_controller),
 ):
-    course = await courses_controller.courses_repository.first(where_=[Courses.id == course_id])
-    if not course:
-        raise NotFoundException(message="Course not found for the given ID.")
+    """Upload documents to an existing course."""
+    from utils.file_processor import process_document
 
-    is_owner = (course.owner_id == current_user.id)
-    conditions = [Exercises.course_id == course_id]
-    if not is_owner:
-        conditions.append(Exercises.time_open <= datetime.now())
-
-    exercises = await exercises_controller.exercises_repository.get_many(
-        where_=conditions,
-        order_={"desc": ["time_open"]},
+    course = await courses_controller.courses_repository.first(
+        where_=[Courses.id == courseId]
     )
-    return Ok[List[GetExercise]](data=[
-        GetExercise(
-            id=exercise.id,
-            name=exercise.name,
-            description=exercise.description,
-            type=exercise.type,
-            time_open=exercise.time_open.strftime("%H:%M %d/%m/%Y"),
-            time_close=exercise.time_close.strftime("%H:%M %d/%m/%Y"),
-            time_limit=exercise.time_limit,
-            attempts_allowed=exercise.attempts_allowed,
-            grading_method=exercise.grading_method,
+    if not course:
+        raise NotFoundException(message="Course not found.")
+    if course.owner_id != current_user.id:
+        raise ForbiddenException(message="Only the course owner can add documents.")
+
+    created_docs = []
+    for idx, file in enumerate(files):
+        desc = descriptions[idx] if idx < len(descriptions) else file.filename
+        doc_url, _ = await upload_image(file, str(courseId))
+        doc = await documents_controller.documents_repository.create(
+            attributes={
+                "course_id": str(courseId),
+                "name": file.filename,
+                "type": file.content_type or "application/octet-stream",
+                "description": desc,
+                "document_url": doc_url,
+                "status": "processing",
+            },
+            commit=True,
         )
-        for exercise in exercises
-    ])
+        created_docs.append({"id": str(doc.id), "name": doc.name, "status": doc.status})
+        try:
+            await process_document(doc, extracted_text_controller, documents_controller)
+        except Exception:
+            pass
 
-
-@router.patch("/admin/{course_id}")
-async def update_course(
-    course_id: UUID,
-    request: UpdateCourseRequest,
-    current_user: Users = Depends(get_current_user),
-    courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-):
-    if current_user.role != "admin":
-        raise ForbiddenException(message="You are not allowed to access this feature.")
-
-    course_attributes = {}
-    if request.name is not None:
-        course_attributes["name"] = request.name
-    if request.n_credit is not None:
-        course_attributes["nCredit"] = request.n_credit
-    if request.n_semester is not None:
-        course_attributes["nSemester"] = request.n_semester
-    if request.courseID is not None:
-        course_attributes["courseID"] = request.courseID
-    if request.start_date is not None:
-        course_attributes["start_date"] = request.start_date
-    if request.end_date is not None:
-        course_attributes["end_date"] = request.end_date
-    if request.class_name is not None:
-        course_attributes["class_name"] = request.class_name
-    if request.professor_id is not None:
-        course_attributes["owner_id"] = request.professor_id
-    if request.status is not None:
-        course_attributes["status"] = request.status
-
-    update_course_result = await courses_controller.courses_repository.update(
-        where_=[Courses.id == course_id],
-        attributes=course_attributes,
-        commit=True,
-    )
-
-    if not update_course_result:
-        raise BadRequestException(message="Failed to update course.")
-
-    return Ok(data=None, message="Successfully updated the course.")
-
-
-@router.delete("/admin/{course_id}")
-async def delete_course(
-    course_id: UUID,
-    current_user: Users = Depends(get_current_user),
-    courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
-):
-    if current_user.role != "admin":
-        raise ForbiddenException(message="You are not allowed to access this feature.")
-
-    await courses_controller.courses_repository.delete(where_=[Courses.id == course_id])
-    await student_courses_controller.student_courses_repository.delete(where_=[StudentCourses.course_id == course_id])
-    await courses_controller.courses_repository.session.commit()
-    await student_courses_controller.student_courses_repository.session.commit()
-
-    return Ok(data=None, message="Successfully deleted the course.")
-
-
-@router.get("/issues/{course_id}")
-async def get_course_issues(
-    course_id: UUID,
-    current_user: Users = Depends(get_current_user),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
-):
-    course = await student_courses_controller.student_courses_repository.first(
-        where_=[StudentCourses.course_id == course_id]
-    )
-    if not course:
-        raise NotFoundException(message="Student does not enroll in this course.")
-
-    return Ok(data={"issues_summary": course.issues_summary}, message="Successfully fetched the course issues.")
+    return Ok(data=created_docs, message="Documents uploaded successfully.")

@@ -10,7 +10,7 @@ from sqlalchemy import Column, String, ForeignKey, Text, DateTime, func, Integer
 class Documents(Base):
     __tablename__ = "documents"
     id = Column(UUID, primary_key=True, default=uuid4)
-    lesson_id = Column(UUID, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=False)
+    course_id = Column(UUID, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
     name = Column(String, nullable=False)
     type = Column(String, nullable=False)
     description = Column(String, nullable=False)
@@ -19,5 +19,5 @@ class Documents(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
     progress_upload = Column(Integer, default="0", nullable=False)
 
-    extracted_text = relationship("ExtractedText", back_populates="document")  # changed here
-    lesson = relationship("Lessons", back_populates="documents")
+    extracted_text = relationship("ExtractedText", back_populates="document")
+    course = relationship("Courses", back_populates="documents")

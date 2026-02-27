@@ -1,7 +1,7 @@
 from uuid import UUID
 from pydantic import BaseModel
 from typing import List, Union
-from core.repository.enum import StatusType,DifficultyLevel
+from core.repository.enum import StatusType, DifficultyLevel
 from typing import Optional
 
 class DocumentResponse(BaseModel):
@@ -46,7 +46,6 @@ class QuizListResponse(BaseModel):
 class ModuleResponse(BaseModel):
     module_id: UUID
     title: str
-    # description: str
     progress: int
     objectives: List[str]
     
@@ -58,16 +57,15 @@ class ModuleQuizResponse(BaseModel):
     
 
 class RecommendLessonResponse(BaseModel):
-    lesson_id: UUID
-    name: str
-    learning_outcomes: List[str]
-    description: str
+    id: UUID
+    title: str
+    learning_outcomes: Optional[List[str]] = None
+    description: Optional[str] = None
     progress: int
     status: str
-    recommend_content: str
-    explain: str
+    recommend_content: Optional[str] = None
+    explain: Optional[str] = None
     modules: List[ModuleResponse]
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     duration_notes: Optional[str] = None
-    

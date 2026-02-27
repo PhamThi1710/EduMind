@@ -40,7 +40,7 @@ async def get_module_by_quiz(
     if not recommend_lesson:
         raise NotFoundException(message="Recommend Lesson not found for the given ID.")
     
-    if not recommend_lesson.learning_path.student_id == user.id:
+    if not recommend_lesson.learning_path.user_id == user.id:
         raise NotFoundException(message="You are not authorized to access this module.")
 
     # Create a list to store quiz responses
@@ -107,7 +107,7 @@ async def get_quiz_exercise(
     )
     if not recommend_lesson:
         raise NotFoundException(message="Recommend Lesson not found for the given ID.")
-    if not recommend_lesson.learning_path.student_id == user.id:
+    if not recommend_lesson.learning_path.user_id == user.id:
         raise NotFoundException(message="You are not authorized to access this quiz.")
     
     # Use the quiz_questions from database instead of quiz.questions
@@ -149,7 +149,6 @@ async def submit_quiz_answer(
     recommend_quizzes_controller: RecommendQuizzesController = Depends(InternalProvider().get_recommend_quizzes_controller),
     recommend_quiz_question_controller: RecommendQuizQuestionController = Depends(InternalProvider().get_recommend_quiz_question_controller),
     learning_paths_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
 ):  
     user = current_user
     
@@ -267,7 +266,6 @@ async def submit_quiz_answer(
             questions_results=question_results,
             recommend_lessons_controller=recommend_lessons_controller,
             learning_paths_controller=learning_paths_controller,
-            student_courses_controller=student_courses_controller
         )
     except Exception as e:
         # Log the error but don't fail the quiz submission
@@ -298,10 +296,11 @@ async def analyze_and_return_issues(
     questions_results: List[Dict],
     recommend_lessons_controller: RecommendLessonsController,
     learning_paths_controller: LearningPathsController,
-    student_courses_controller: StudentCoursesController,
 ):
     """
-    Analyze quiz results, update the issues_summary and achievements in student_courses, and return identified issues
+    Analyze quiz results and return identified issues and achievements.
+    Note: StudentCourses table has been removed, so issues/achievements are returned
+    but not persisted to a student_courses record.
     """
     # Only proceed with analysis if there are incorrect answers
     incorrect_answers = [q for q in questions_results if not q["is_correct"]]
@@ -311,52 +310,33 @@ async def analyze_and_return_issues(
     all_correct = len(incorrect_answers) == 0 and len(questions_results) > 0
     high_score = len(incorrect_answers) / len(questions_results) <= 0.3 if questions_results else False
     
-    # Get current issues summary and achievements from student_courses
-    learning_path = await learning_paths_controller.learning_paths_repository.first(
-        where_=[LearningPaths.id == recommend_lesson.learning_path_id],
-    )
-    
-    student_course = await student_courses_controller.student_courses_repository.first(
-        where_=[StudentCourses.course_id == learning_path.course_id, StudentCourses.student_id == user_id],
-    )
-    
-    current_summary = student_course.issues_summary if student_course.issues_summary else {"common_issues": []}
-    current_achievements = student_course.achievements if student_course.achievements else {"earned_achievements": []}
-    
     # Generate achievements based on quiz performance and content
     new_achievements = []
     
     # Extract module-specific information
     module_topics = []
     if hasattr(module, 'objectives') and module.objectives:
-        # Extract keywords for topic-specific achievements
         module_topics = module.objectives
     elif hasattr(module, 'title') and module.title:
-        # Fallback to module title if objectives aren't available
         module_topics = [module.title]
     
     # Get topic-specific information from the questions
     question_topics = set()
     mastered_topics = set()
     
-    # Find topics that were tested in the quiz and mastered by the student
     for q in questions_results:
-        # Extract topic from question text or other fields
         topic = extract_topic_from_question(q)
         if topic:
             question_topics.add(topic)
             if q["is_correct"]:
                 mastered_topics.add(topic)
     
-    # Add module topics to our collection of topics
     if module_topics:
         question_topics.update(module_topics)
     
-    # Create specific achievements based on performance
     now = datetime.now(timezone.utc).isoformat()
     
     if all_correct:
-        # Perfect score achievement with specific module reference
         new_achievements.append({
             "type": "perfect_score",
             "description": f"Perfect Score: Mastered {module.title}",
@@ -364,8 +344,6 @@ async def analyze_and_return_issues(
             "related_topics": list(question_topics),
             "difficulty": "advanced" 
         })
-        
-        # Add topic mastery achievements for each topic covered
         for topic in mastered_topics:
             new_achievements.append({
                 "type": "concept_mastery",
@@ -374,9 +352,7 @@ async def analyze_and_return_issues(
                 "related_topics": [topic],
                 "difficulty": "advanced"
             })
-            
     elif high_score:
-        # High performance with specific module reference
         new_achievements.append({
             "type": "high_performance",
             "description": f"Expert Knowledge: {module.title}",
@@ -384,8 +360,6 @@ async def analyze_and_return_issues(
             "related_topics": list(question_topics),
             "difficulty": "intermediate"
         })
-        
-        # Add topic proficiency achievements for mastered topics
         for topic in mastered_topics:
             new_achievements.append({
                 "type": "topic_proficiency",
@@ -395,7 +369,6 @@ async def analyze_and_return_issues(
                 "difficulty": "intermediate"
             })
     else:
-        # Basic completion with specific module reference
         progress_percent = round((len(correct_answers) / len(questions_results)) * 100)
         new_achievements.append({
             "type": "quiz_completion",
@@ -404,14 +377,10 @@ async def analyze_and_return_issues(
             "related_topics": list(question_topics),
             "difficulty": "basic"
         })
-        
-        # Add achievement for consistent improvement if previous attempts were worse
-        # This would require tracking previous attempts, which could be added in a future enhancement
     
-    # Add streak achievements if student has completed multiple quizzes in a row
-    # This would require tracking quiz completion history
+    current_summary = {"common_issues": []}
+    current_achievements = {"earned_achievements": []}
     
-    # Prepare data for AI analysis to identify issues and additional achievements
     prompt = prepare_analysis_prompt(
         quiz_id=quiz_id,
         module=module,
@@ -432,51 +401,23 @@ async def analyze_and_return_issues(
         response = llm.invoke(prompt)
         
         if not response:
-            print("Failed to get analysis from LLM")
-            # Return default achievements even if LLM fails
             return {"issues": None, "achievements": new_achievements}
         
         response_text = response.content
         analysis_result = extract_json_from_response(response_text)
         
-        # Check if analysis returned valid data
         if not analysis_result:
-            print("Invalid response format from LLM, using default achievements")
             return {"issues": None, "achievements": new_achievements}
         
-        # Process issues
         new_issues = analysis_result.get("common_issues", [])
         
-        # Process achievements from LLM response
         llm_achievements = analysis_result.get("new_achievements", [])
         if llm_achievements:
-            # Ensure LLM-generated achievements don't duplicate our content-specific ones
-            # by comparing types and descriptions
             existing_desc = {achievement["description"] for achievement in new_achievements}
             for achievement in llm_achievements:
                 if achievement["description"] not in existing_desc:
                     new_achievements.append(achievement)
         
-        # Process resolved issues to achievements
-        resolved_issues = analysis_result.get("resolved_issues", [])
-        
-        # Update issues_summary in student_courses
-        updated_issues_summary = process_issues(current_summary, new_issues, resolved_issues)
-        
-        # Update achievements in student_courses
-        updated_achievements = process_achievements(current_achievements, new_achievements, resolved_issues)
-        
-        # Update student_courses with both updated issues and achievements
-        await student_courses_controller.student_courses_repository.update(
-            where_=[StudentCourses.course_id == learning_path.course_id, StudentCourses.student_id == user_id],
-            attributes={
-                "issues_summary": updated_issues_summary,
-                "achievements": updated_achievements
-            },
-            commit=True
-        )
-        
-        # Return the newly identified issues and achievements for the API response
         return {
             "issues": new_issues if new_issues else None,
             "achievements": new_achievements if new_achievements else None
@@ -484,7 +425,6 @@ async def analyze_and_return_issues(
         
     except Exception as e:
         print(f"Error during AI analysis: {str(e)}")
-        # Return generated achievements even if an error occurs
         return {"issues": None, "achievements": new_achievements}
         
 
@@ -848,7 +788,7 @@ async def clear_quiz_answers(
     )
     if not recommend_lesson:
         raise NotFoundException(message="Recommend Lesson not found for the given ID.")
-    if not recommend_lesson.learning_path.student_id == user.id:
+    if not recommend_lesson.learning_path.user_id == user.id:
         raise NotFoundException(message="You are not authorized to clear answers for this quiz.")
     
     for question in quiz.questions:
@@ -889,7 +829,7 @@ async def get_document(
     )
     if not recommend_lesson:
         raise NotFoundException(message="Recommend Lesson not found for the given ID.")
-    if not recommend_lesson.learning_path.student_id == user.id:
+    if not recommend_lesson.learning_path.user_id == user.id:
         raise NotFoundException(message="You are not authorized to access this document.")
     
     document = await recommend_documents_controller.recommend_documents_repository.first(

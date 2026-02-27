@@ -184,7 +184,7 @@ async def generate_detailed_learning_path(
     timeline: Dict[str, str],
     selected_lessons: List[Dict],
     lessons_data: List[Dict],
-    student_id: str,
+    user_id: str,
     course_id: str,
 ) -> Dict:
     """Giai đoạn 3: Tạo learning path chi tiết với đầy đủ các yêu cầu và ràng buộc."""
@@ -401,7 +401,7 @@ async def generate_detailed_learning_path(
         "learning_path_end_date": timeline["end_date"],
         "learning_path_objective": f"Achieve {goal}",
         "learning_path_progress": 0,
-        "student_id": student_id,
+        "user_id": user_id,
         "course_id": course_id,
         "recommend_lessons": recommend_lessons,
         "modules": modules
@@ -422,9 +422,8 @@ async def generate_learning_path(
     documents_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
     extracted_text_controller: ExtractedTextController = Depends(InternalProvider().get_extracted_text_controller),
     recommend_documents_controller: RecommendDocumentsController = Depends(InternalProvider().get_recommenddocuments_controller),
-    lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
 ):
-    student = current_user
+    user = current_user
     
     if not request.goal or not request.course_id:
         raise BadRequestException(message="Please provide course_id and goal.")
@@ -434,42 +433,32 @@ async def generate_learning_path(
     if not course:
         raise NotFoundException(message="Course not found.")
     
-    # Fetch professor information
-    professor = await user_controller.user_repository.first(where_=[Users.id == course.professor_id])
-    if not professor:
-        raise NotFoundException(message="Professor information not found.")
+    # Fetch owner information
+    owner = await user_controller.user_repository.first(where_=[Users.id == course.owner_id])
+    if not owner:
+        raise NotFoundException(message="Course owner information not found.")
     
-    # Fetch all lessons for the course
-    lessons = await lessons_controller.lessons_repository.get_many(where_=[Lessons.course_id == request.course_id])
-    if not lessons:
-        raise NotFoundException(message="No lessons found for this course.")
+    # Fetch all documents for the course (documents now link directly to courses)
+    documents = await documents_controller.documents_repository.get_many(where_=[Documents.course_id == request.course_id])
+    if not documents:
+        raise NotFoundException(message="No documents found for this course.")
     
-    # Prepare data structure for all lessons with their documents and extracted text
-    lessons_data = []
-    for lesson in lessons:
-        documents = await documents_controller.documents_repository.get_many(where_=[Documents.lesson_id == lesson.id])
-        documents_data = []
-        for document in documents:
-            extracted = await extracted_text_controller.extracted_text_repository.first(
-                where_=[ExtractedText.document_id == document.id]
-            )
-            if extracted and extracted.extracted_content:
-                documents_data.append({
-                    "extracted_content": extracted.extracted_content
-                })
-        
-        lessons_data.append({
-            "id": str(lesson.id),
-            "title": lesson.title,
-            "description": lesson.description,
-            "order": lesson.order,
-            "learning_outcomes": lesson.learning_outcomes if lesson.learning_outcomes else [],
-            "documents": documents_data
-        })
+    # Prepare data structure for all documents with their extracted text
+    documents_data = []
+    for document in documents:
+        extracted = await extracted_text_controller.extracted_text_repository.first(
+            where_=[ExtractedText.document_id == document.id]
+        )
+        if extracted and extracted.extracted_content:
+            documents_data.append({
+                "id": str(document.id),
+                "name": document.name,
+                "type": document.type if hasattr(document, 'type') else None,
+                "description": document.description if hasattr(document, 'description') else None,
+                "extracted_content": extracted.extracted_content
+            })
     
-    lessons_data.sort(key=lambda x: x["order"])
-    
-    # Giai đoạn 1: Phân tích goal và xác định timeline
+    # Phase 1: Analyze goal and determine timeline
     timeline = await analyze_goal_and_timeline(
         goal=request.goal,
         course_start_date=course.start_date,
@@ -478,22 +467,22 @@ async def generate_learning_path(
         course_learning_outcomes=course.learning_outcomes or []
     )
 
-    # Giai đoạn 2: Chọn và sắp xếp lessons liên quan
+    # Phase 2: Select and order relevant content sections from documents
     selected_lessons = await select_relevant_lessons(
         goal=request.goal,
-        lessons_data=lessons_data,
+        lessons_data=documents_data,
         timeline=timeline,
         course_name=course.name,
         course_learning_outcomes=course.learning_outcomes or []
     )
 
-    # Giai đoạn 3: Tạo learning path chi tiết
+    # Phase 3: Generate detailed learning path
     learning_path = await generate_detailed_learning_path(
         goal=request.goal,
         timeline=timeline,
         selected_lessons=selected_lessons,
-        lessons_data=lessons_data,
-        student_id=str(student.id),
+        lessons_data=documents_data,
+        user_id=str(user.id),
         course_id=str(request.course_id)
     )
     # Save to database
@@ -521,7 +510,7 @@ async def generate_learning_path(
             "start_date": datetime.strptime(learning_path["learning_path_start_date"], '%Y-%m-%d').date(),
             "end_date": datetime.strptime(learning_path["learning_path_end_date"], '%Y-%m-%d').date(),
             "objective": request.goal,
-            "student_id": str(student.id),
+            "user_id": str(user.id),
             "course_id": str(request.course_id),
             "llm_response": learning_path,
         }
@@ -541,7 +530,8 @@ async def generate_learning_path(
                 
                 recommend_lesson_attributes = {
                     "learning_path_id": add_learning_path.id,
-                    "lesson_id": str(recommend_lesson["lesson_id"]),
+                    "title": recommend_lesson.get("title", "Untitled"),
+                    "description": recommend_lesson.get("description", ""),
                     "recommended_content": recommend_lesson["recommended_content"],
                     "explain": recommend_lesson["explain"],
                     "start_date": recommend_lesson["start_date"],
@@ -621,7 +611,7 @@ async def generate_learning_path(
                     original_lesson = learning_path["recommend_lessons"][i]
                     num_modules = original_lesson.get("number_of_modules", 2)  # Use pre-calculated value
                     created_recommend_lessons_response.append({
-                        "lesson_id": str(recommend_lesson.lesson_id),
+                        "title": recommend_lesson.title,
                         "recommended_content": recommend_lesson.recommended_content,
                         "explain": recommend_lesson.explain,
                         "status": recommend_lesson.status,
@@ -660,7 +650,7 @@ async def generate_learning_path(
                     "learning_path_end_date": str(add_learning_path.end_date),
                     "learning_path_objective": add_learning_path.objective,
                     "learning_path_progress": add_learning_path.progress,
-                    "student_id": str(add_learning_path.student_id),
+                    "user_id": str(add_learning_path.user_id),
                     "course_id": str(add_learning_path.course_id),
                     "recommend_lessons": created_recommend_lessons_response,
                     "modules": created_modules_response,
@@ -696,24 +686,17 @@ async def regenerate_lesson_content(
     recommend_lesson_id: UUID,
     analysis_result: dict,
     prior_recommend_lessons_data: List[dict],
-    lessons_controller: LessonsController,
     recommend_lessons_controller: RecommendLessonsController,
     modules_controller: ModulesController,
     recommend_documents_controller: RecommendDocumentsController
 ) -> dict:
-    """Bổ sung nội dung cho một recommended lesson dựa trên analysis result mà không xóa modules cũ."""
+    """Supplement content for a recommended lesson based on analysis result without deleting old modules."""
     # Fetch existing data
     recommend_lesson = await recommend_lessons_controller.recommend_lessons_repository.first(
         where_=[RecommendLessons.id == recommend_lesson_id]
     )
     if not recommend_lesson:
         raise NotFoundException(message="Recommended lesson not found.")
-    
-    lesson = await lessons_controller.lessons_repository.first(
-        where_=[Lessons.id == recommend_lesson.lesson_id]
-    )
-    if not lesson:
-        raise NotFoundException(message="Lesson not found.")
 
     # Get existing modules to reference later
     existing_modules = await modules_controller.modules_repository.get_many(
@@ -735,7 +718,7 @@ async def regenerate_lesson_content(
     ## Supplementary Learning Content Generation Task
 
     ### Context
-    - Lesson Title: "{lesson.title}"
+    - Lesson Title: "{recommend_lesson.title}"
     - Current Recommended Content: "{recommend_lesson.recommended_content}"  
     - Current Explanation: "{recommend_lesson.explain}"
     - Start Date: "{recommend_lesson.start_date}"
@@ -932,8 +915,6 @@ async def monitor_study_progress(
     current_user: Users = Depends(get_current_user),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
     learning_path_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
-    lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
 ):
     student = current_user
     
@@ -946,19 +927,15 @@ async def monitor_study_progress(
 
     # Get learning path
     learning_path = await learning_path_controller.learning_paths_repository.first(
-        where_=[LearningPaths.student_id == UUID(student_id), LearningPaths.course_id == course_id],
+        where_=[LearningPaths.user_id == student.id, LearningPaths.course_id == course_id],
         order_={"desc": ["version"]}
     )
     if not learning_path:
         raise NotFoundException(message="Learning path not found.")
 
-    student_course = await student_courses_controller.student_courses_repository.first(
-        where_=[StudentCourses.student_id == UUID(student_id), StudentCourses.course_id == course_id]
-    )
-    
-    # Extract both issues and achievements data
-    issues_summary = student_course.issues_summary if student_course and student_course.issues_summary else {}
-    achievements = student_course.achievements if student_course and hasattr(student_course, 'achievements') else {}
+    # Since StudentCourses is removed, use empty issues/achievements
+    issues_summary = {}
+    achievements = {}
 
     # Analyze both issues and achievements
     issues_analysis = await analyze_issues(
@@ -966,7 +943,6 @@ async def monitor_study_progress(
         issues_summary,
         learning_path,
         recommend_lessons_controller,
-        lessons_controller
     )
     
     achievements_analysis = await analyze_achievements(
@@ -974,7 +950,6 @@ async def monitor_study_progress(
         achievements,
         learning_path,
         recommend_lessons_controller,
-        lessons_controller
     )
     
     # Combine both analyses into a single result
@@ -1001,17 +976,15 @@ async def analyze_achievements(
     achievements: dict,
     learning_path: LearningPaths,
     recommend_lessons_controller: RecommendLessonsController,
-    lessons_controller: LessonsController
 ) -> dict:
     """
     Analyze the achievements data using AI to determine student progress and strengths.
     
     Args:
         recommend_lesson: The recommended lesson object
-        achievements: JSON data from StudentCourses.achievements
-        learning_path: The latest learning path for the student
+        achievements: JSON data for earned achievements
+        learning_path: The latest learning path for the user
         recommend_lessons_controller: Controller for recommend_lessons
-        lessons_controller: Controller for lessons
     
     Returns:
         Dict with AI-driven analysis of achievements
@@ -1129,17 +1102,15 @@ async def analyze_issues(
     issues_summary: dict,
     learning_path: LearningPaths,
     recommend_lessons_controller: RecommendLessonsController,
-    lessons_controller: LessonsController
 ) -> dict:
     """
-    Analyze the issues_summary using AI to determine next steps for the student.
+    Analyze the issues_summary using AI to determine next steps for the user.
     
     Args:
         recommend_lesson: The recommended lesson object
-        issues_summary: JSON data from StudentCourses.issues_summary
-        learning_path: The latest learning path for the student
+        issues_summary: JSON issues data
+        learning_path: The latest learning path for the user
         recommend_lessons_controller: Controller for recommend_lessons
-        lessons_controller: Controller for lessons
     
     Returns:
         Dict with AI-driven analysis results and recommendations
@@ -1166,25 +1137,19 @@ async def analyze_issues(
         max_output_tokens=8000
     )
 
-    # Fetch lesson and learning path details
-    lesson = await lessons_controller.lessons_repository.first(
-        where_=[Lessons.id == recommend_lesson.lesson_id]
-    )
+    # Use recommend_lesson.title instead of looking up a separate Lessons table
     all_recommend_lessons = await recommend_lessons_controller.recommend_lessons_repository.get_many(
         where_=[RecommendLessons.learning_path_id == learning_path.id]
     )
     prior_lessons = [rl for rl in all_recommend_lessons if rl.order < recommend_lesson.order]
     
-    # Get lesson details for prior lessons (if any)
+    # Get prior recommend lesson details
     prior_lessons_details = []
     if prior_lessons:
         for rl in prior_lessons:
-            prior_lesson = await lessons_controller.lessons_repository.first(
-                where_=[Lessons.id == rl.lesson_id]
-            )
             prior_lessons_details.append({
                 "id": str(rl.id),
-                "title": prior_lesson.title,
+                "title": rl.title,
                 "order": rl.order
             })
     
@@ -1319,13 +1284,12 @@ async def regenerate_lesson_content_endpoint(
     request: RegenerateLessonRequest = Body(...),
     current_user: Users = Depends(get_current_user),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
-    lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
     learning_path_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
     recommend_documents_controller: RecommendDocumentsController = Depends(InternalProvider().get_recommenddocuments_controller),
 ):
     """Regenerate content for a recommended lesson based on analysis result from monitor_study_progress."""
-    student_id = current_user.id
+    user_id = current_user.id
 
     # Kiểm tra analysis_result
     analysis_result = request.analysis_result
@@ -1347,17 +1311,14 @@ async def regenerate_lesson_content_endpoint(
         learning_path = await learning_path_controller.learning_paths_repository.first(
             where_=[LearningPaths.id == recommend_lesson.learning_path_id]
         )
-        prior_recommend_lessons = await recommend_lessons_controller.recommend_lessons_repository.get_many(
+        prior_lessons_details = await recommend_lessons_controller.recommend_lessons_repository.get_many(
             where_=[RecommendLessons.learning_path_id == learning_path.id, RecommendLessons.order < recommend_lesson.order],
             order_={"asc": ["order"]}
         )
         # Limit to 2 most recent prior recommend lessons
-        for prior_rl in prior_recommend_lessons[-2:]:
-            prior_lesson = await lessons_controller.lessons_repository.first(
-                where_=[Lessons.id == prior_rl.lesson_id]
-            )
+        for prior_rl in prior_lessons_details[-2:]:
             prior_recommend_lessons_data.append({
-                "title": prior_lesson.title,
+                "title": prior_rl.title,
                 "recommended_content": prior_rl.recommended_content,
                 "explain": prior_rl.explain,
                 "order": prior_rl.order,
@@ -1369,7 +1330,6 @@ async def regenerate_lesson_content_endpoint(
         recommend_lesson_id=request.recommend_lesson_id,
         analysis_result=analysis_result,
         prior_recommend_lessons_data=prior_recommend_lessons_data,
-        lessons_controller=lessons_controller,
         recommend_lessons_controller=recommend_lessons_controller,
         modules_controller=modules_controller,
         recommend_documents_controller=recommend_documents_controller
@@ -1381,25 +1341,21 @@ async def regenerate_lesson_content_get_endpoint(
     recommend_lesson_id: UUID,
     current_user: Users = Depends(get_current_user),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
-    lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
-    student_courses_controller: StudentCoursesController = Depends(InternalProvider().get_studentcourses_controller),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
     learning_path_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
+    recommend_documents_controller: RecommendDocumentsController = Depends(InternalProvider().get_recommenddocuments_controller),
 ):
     """Regenerate content for a recommended lesson based on issues."""
-    student_id = current_user.id
+    user_id = current_user.id
 
-    student_course = await student_courses_controller.student_courses_repository.first(
-        where_=[StudentCourses.student_id == student_id]
-    )
-    if not student_course:
-        raise NotFoundException(message="Student course data not found.")
-
+    # Since StudentCourses is removed, pass empty issues_summary
     updated_content = await regenerate_lesson_content(
         recommend_lesson_id,
-        student_course.issues_summary,
-        lessons_controller,
-        recommend_lessons_controller
+        {},  # Empty analysis result / issues_summary
+        [],  # No prior lessons data
+        recommend_lessons_controller,
+        modules_controller,
+        recommend_documents_controller
     )
     return Ok(data=updated_content, message="Lesson content regenerated successfully.")
  
@@ -1410,11 +1366,10 @@ async def generate_student_goals(
     current_user: Users = Depends(get_current_user),
     courses_controller: CoursesController = Depends(InternalProvider().get_courses_controller),
     user_controller: UserController = Depends(InternalProvider().get_user_controller),
-    lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     documents_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
     extracted_text_controller: ExtractedTextController = Depends(InternalProvider().get_extracted_text_controller),
 ):
-    student = current_user
+    user = current_user
     
     if not course_id:
         raise BadRequestException(message="Please provide course_id.")
@@ -1424,31 +1379,30 @@ async def generate_student_goals(
     if not course:
         raise NotFoundException(message="Course not found.")
     
-    # Fetch professor information
-    professor = await user_controller.user_repository.first(where_=[Users.id == course.professor_id])
-    if not professor:
-        raise NotFoundException(message="Professor information not found.")
+    # Fetch owner information
+    owner = await user_controller.user_repository.first(where_=[Users.id == course.owner_id])
+    if not owner:
+        raise NotFoundException(message="Course owner information not found.")
     
-    # Fetch all lessons for the course (just a sample to understand the course scope)
-    lessons = await lessons_controller.lessons_repository.get_many(where_=[Lessons.course_id == course_id])
-    if not lessons:
-        raise NotFoundException(message="No lessons found for this course.")
+    # Fetch all documents for the course
+    documents = await documents_controller.documents_repository.get_many(where_=[Documents.course_id == course_id])
+    if not documents:
+        raise NotFoundException(message="No documents found for this course.")
     
     # Prepare data structure for course overview
     course_data = {
         "id": str(course.id),
         "name": course.name,
-        "courseID": course.courseID,
+
         "learning_outcomes": course.learning_outcomes if course.learning_outcomes else [],
-        "lessons": []
+        "documents": []
     }
     
-    # Add just lesson titles and descriptions (not full content)
-    for lesson in lessons:
-        course_data["lessons"].append({
-            "title": lesson.title,
-            "description": lesson.description,
-            "learning_outcomes": lesson.learning_outcomes if lesson.learning_outcomes else []
+    # Add document summaries
+    for document in documents:
+        course_data["documents"].append({
+            "name": document.name,
+            "description": document.description if hasattr(document, 'description') else None,
         })
     
     # Initialize the ChunkingManager (for consistency, though we may not need chunking here)
@@ -1462,21 +1416,21 @@ async def generate_student_goals(
     # Create a prompt for goal generation
     
     prompt = f"""
-        # Student Goal Generation Task
+        # Learning Goal Generation Task
 
-        ## Student Information
-        - Student Name: {student.fullname}
-        - Course: {course.name} (ID: {course.courseID})
-        - Professor: {professor.fullname}
+        ## User Information
+        - User Name: {user.fullname}
+        - Course: {course.name}
+        - Course Owner: {owner.fullname}
 
         ## Course Information
         - Learning Outcomes: {json.dumps(course.learning_outcomes if course.learning_outcomes else [])}
 
-        ## Course Lessons Overview
-        {json.dumps(course_data["lessons"], indent=2)}
+        ## Course Documents Overview
+        {json.dumps(course_data["documents"], indent=2)}
 
         ## Task Requirements
-        Based on the course information, lessons overview, and the student's proficiency level (Struggling, Average, Advanced):
+        Based on the course information, documents overview, and the user's proficiency level (Struggling, Average, Advanced):
 
         1. Generate personalized learning goals for EACH proficiency level (Struggling, Average, Advanced).
         2. Create at least 2 goals and maximum 3 goals for each proficiency level.
@@ -1558,13 +1512,13 @@ async def generate_quiz(
     current_user: Users = Depends(get_current_user),
     modules_controller: ModulesController = Depends(InternalProvider().get_modules_controller),
     recommend_lessons_controller: RecommendLessonsController = Depends(InternalProvider().get_recommendlessons_controller),
-    lessons_controller: LessonsController = Depends(InternalProvider().get_lessons_controller),
     documents_controller: DocumentsController = Depends(InternalProvider().get_documents_controller),
     extracted_text_controller: ExtractedTextController = Depends(InternalProvider().get_extracted_text_controller),
     recommend_quizzes_controller: RecommendQuizzesController = Depends(InternalProvider().get_recommend_quizzes_controller),
     recommend_quiz_questions_controller: RecommendQuizQuestionController = Depends(InternalProvider().get_recommend_quiz_question_controller),
+    learning_path_controller: LearningPathsController = Depends(InternalProvider().get_learningpaths_controller),
 ):
-    student = current_user
+    user = current_user
     
     if not request.module_id:
         raise BadRequestException(message="Please provide module_id.")
@@ -1581,27 +1535,26 @@ async def generate_quiz(
     if not recommend_lesson:
         raise NotFoundException(message="Recommended lesson not found.")
     
-    # Fetch the original lesson
-    lesson = await lessons_controller.lessons_repository.first(
-        where_=[Lessons.id == recommend_lesson.lesson_id]
+    # Get learning path to find course
+    learning_path = await learning_path_controller.learning_paths_repository.first(
+        where_=[LearningPaths.id == recommend_lesson.learning_path_id]
     )
-    if not lesson:
-        raise NotFoundException(message="Original lesson not found.")
+    if not learning_path:
+        raise NotFoundException(message="Learning path not found.")
     
-    # Get documents for this lesson
+    # Get documents from the course (documents now link directly to courses)
     documents = await documents_controller.documents_repository.get_many(
-        where_=[Documents.lesson_id == lesson.id]
+        where_=[Documents.course_id == learning_path.course_id]
     )
     if not documents:
-        raise NotFoundException(message="No documents found for this lesson.")
+        raise NotFoundException(message="No documents found for this course.")
     
-    # Prepare data structure with lesson details and its documents and extracted text
+    # Prepare data structure using recommend_lesson data (self-contained) and course documents
     lesson_data = {
-        "id": str(lesson.id),
-        "title": lesson.title,
-        "description": lesson.description,
-        "order": lesson.order,
-        "learning_outcomes": lesson.learning_outcomes if lesson.learning_outcomes else [],
+        "id": str(recommend_lesson.id),
+        "title": recommend_lesson.title,
+        "description": recommend_lesson.description or "",
+        "learning_outcomes": recommend_lesson.learning_outcomes if recommend_lesson.learning_outcomes else [],
         "documents": []
     }
     
@@ -1613,8 +1566,7 @@ async def generate_quiz(
             lesson_data["documents"].append({
                 "id": str(document.id),
                 "name": document.name,
-                "type": document.type,
-                "description": document.description,
+                "description": document.description if hasattr(document, 'description') else None,
                 "extracted_content": extracted.extracted_content
             })
     

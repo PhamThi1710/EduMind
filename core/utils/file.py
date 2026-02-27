@@ -29,6 +29,17 @@ async def upload_to_s3(file_content: bytes, file_name: str) -> str:
         return s3_key
     except NoCredentialsError:
         raise RuntimeError("AWS credentials are not configured properly.")
+
+async def upload_image(file, folder: str = "") -> Tuple[str, str]:
+    """
+    Upload a FastAPI UploadFile to S3 and return (s3_key, presigned_url).
+    This is a convenience wrapper around upload_to_s3 + generate_presigned_url.
+    """
+    file_content = await file.read()
+    file_name = f"{folder}/{file.filename}" if folder else file.filename
+    s3_key = await upload_to_s3(file_content, file_name)
+    presigned_url = generate_presigned_url(s3_key)
+    return s3_key, presigned_url
 def generate_presigned_url(s3_key: str, expiration: int = 3600) -> str:
     bucket_name = AWS3Settings.AWS3_BUCKET_NAME
     s3 = boto3.client(

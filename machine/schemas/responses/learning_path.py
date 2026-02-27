@@ -18,7 +18,7 @@ class ModuleDTO(BaseModel):
 class RecommendedLessonDTO(BaseModel):
     id: UUID = Field(..., description="Unique identifier for the recommended lesson.")
     learning_path_id: UUID = Field(..., description="ID of the associated learning path.")
-    lesson_id: Optional[UUID] = Field(None, description="ID of the associated lesson.")
+    title: Optional[str] = Field(None, description="Title of the recommended lesson.")
     progress: int = Field(..., description="Progress of the lesson, represented as a percentage.")
     explain: Optional[str] = Field(None, description="Explanation for why the lesson is recommended.")
     status: str = Field(..., description="Status of the recommended lesson.")
